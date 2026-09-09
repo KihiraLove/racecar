@@ -13,9 +13,13 @@ The implementation is based on the known-working code in the `pet-to-npc-transmo
 - creates a client-side `RuneLiteObject` replacement;
 - updates its location and orientation every client tick;
 - builds the replacement from the model parts of `NpcID.DOM_BOSS_BURROWED`;
+- scales the burrowed Doom from its native 5x5 footprint to a 1x1 pet-sized visual;
 - uses `AnimationID.DOM_BURROW_IDLE` while stationary;
 - uses `AnimationID.DOM_BURROWED_MOVEMENT` while moving;
-- follows the same `setAnimation` and looping path used by `pet-to-npc-transmog`.
+- follows the same `setAnimation` and looping path used by `pet-to-npc-transmog`;
+- rewrites the hidden follower's right-click menu to use the actions and name from `NpcID.DOM_PET`.
+
+Because the right-click menu remains attached to the real hidden follower, the simulated Dom entries still act on the actual follower during testing.
 
 ## Final mode
 

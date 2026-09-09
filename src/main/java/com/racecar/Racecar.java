@@ -8,6 +8,8 @@ import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Animation;
 import net.runelite.api.Client;
+import net.runelite.api.MenuAction;
+import net.runelite.api.MenuEntry;
 import net.runelite.api.Model;
 import net.runelite.api.ModelData;
 import net.runelite.api.NPC;
@@ -16,6 +18,7 @@ import net.runelite.api.Renderable;
 import net.runelite.api.RuneLiteObject;
 import net.runelite.api.WorldView;
 import net.runelite.api.events.ClientTick;
+import net.runelite.api.events.MenuOpened;
 import net.runelite.api.gameval.AnimationID;
 import net.runelite.api.gameval.NpcID;
 import net.runelite.client.callback.Hooks;
@@ -39,8 +42,11 @@ public class Racecar extends Plugin
 	private static final boolean TEST_MODE = true;
 
 	private static final int TARGET_NPC_ID = NpcID.DOM_BOSS_BURROWED;
+	private static final int MENU_NPC_ID = NpcID.DOM_PET;
 	private static final int IDLE_ANIMATION_ID = AnimationID.DOM_BURROW_IDLE;
 	private static final int MOVEMENT_ANIMATION_ID = AnimationID.DOM_BURROWED_MOVEMENT;
+	private static final int PET_RENDER_RADIUS = 60;
+	private static final int MODEL_SCALE_BASE = 128;
 
 	@Inject
 	private Client client;
@@ -106,6 +112,76 @@ public class Racecar extends Plugin
 		updateFollowerMovement(follower);
 	}
 
+	@Subscribe
+	public void onMenuOpened(MenuOpened event)
+	{
+		if (!transmogInitialized || sourceFollower == null)
+		{
+			return;
+		}
+
+		NPCComposition domComposition = client.getNpcDefinition(MENU_NPC_ID);
+		if (domComposition == null)
+		{
+			return;
+		}
+
+		String[] domActions = domComposition.getActions();
+		List<MenuEntry> menuEntries = new ArrayList<>(Arrays.asList(event.getMenuEntries()));
+		boolean changed = false;
+
+		for (int i = menuEntries.size() - 1; i >= 0; i--)
+		{
+			MenuEntry menuEntry = menuEntries.get(i);
+			if (menuEntry.getNpc() != sourceFollower)
+			{
+				continue;
+			}
+
+			String domTarget = replaceFollowerName(menuEntry.getTarget(), domComposition.getName());
+			MenuAction menuAction = menuEntry.getType();
+
+			if (menuAction == MenuAction.EXAMINE_NPC)
+			{
+				menuEntry.setOption("Examine");
+				menuEntry.setTarget(domTarget);
+				changed = true;
+				continue;
+			}
+
+			int actionIndex = getNpcActionIndex(menuAction);
+			if (actionIndex < 0)
+			{
+				continue;
+			}
+
+			String domAction = domActions != null && actionIndex < domActions.length
+				? domActions[actionIndex]
+				: null;
+
+			if (domAction == null)
+			{
+				/*
+				 * Do not expose source-pet-specific options that Dom does not have.
+				 * In test mode the Pug already has the same Talk-to/Pick-up slots,
+				 * so this primarily protects other temporary follower choices.
+				 */
+				menuEntries.remove(i);
+				changed = true;
+				continue;
+			}
+
+			menuEntry.setOption(domAction);
+			menuEntry.setTarget(domTarget);
+			changed = true;
+		}
+
+		if (changed)
+		{
+			client.getMenu().setMenuEntries(menuEntries.toArray(new MenuEntry[0]));
+		}
+	}
+
 	private boolean isSourceFollower(NPC follower)
 	{
 		if (follower == null)
@@ -140,7 +216,7 @@ public class Racecar extends Plugin
 
 		WorldView worldView = client.getTopLevelWorldView();
 		transmogObject.setModel(model);
-		transmogObject.setRadius(getTargetRadius());
+		transmogObject.setRadius(PET_RENDER_RADIUS);
 		transmogObject.setLocation(follower.getLocalLocation(), worldView.getPlane());
 		transmogObject.setOrientation(follower.getCurrentOrientation());
 		transmogObject.setActive(true);
@@ -167,7 +243,7 @@ public class Racecar extends Plugin
 
 			transmogObject.setLocation(follower.getLocalLocation(), worldView.getPlane());
 			transmogObject.setOrientation(follower.getCurrentOrientation());
-			transmogObject.setRadius(getTargetRadius());
+			transmogObject.setRadius(PET_RENDER_RADIUS);
 
 			/*
 			 * The established pet-to-npc-transmog plugin reapplies the model while
@@ -257,22 +333,54 @@ public class Racecar extends Plugin
 		}
 
 		/*
-		 * Deliberately mirror pet-to-npc-transmog here: use the NPC's raw model
-		 * parts, merge them, then light the result. Do not add a second custom
-		 * model/transformation pipeline until the baseline transmog is proven.
+		 * The burrowed boss is a 5x5 NPC. Scale its model by the inverse of
+		 * its configured footprint so the transmog occupies the visual scale
+		 * of a normal 1x1 follower while retaining the original proportions.
 		 */
+		int footprintSize = Math.max(1, composition.getSize());
+		if (footprintSize > 1)
+		{
+			int petScale = Math.max(1, Math.round((float) MODEL_SCALE_BASE / footprintSize));
+			mergedModelData = mergedModelData.cloneVertices();
+			mergedModelData.scale(petScale, petScale, petScale);
+		}
+
 		return mergedModelData.light();
 	}
 
-	private int getTargetRadius()
+	private String replaceFollowerName(String target, String domName)
 	{
-		NPCComposition composition = client.getNpcDefinition(TARGET_NPC_ID);
-		if (composition == null)
+		if (target == null || domName == null)
 		{
-			return 300;
+			return target;
 		}
 
-		return Math.max(60, composition.getSize() * 60);
+		String followerName = sourceFollower != null ? sourceFollower.getName() : null;
+		if (followerName != null && target.contains(followerName))
+		{
+			return target.replace(followerName, domName);
+		}
+
+		return target;
+	}
+
+	private static int getNpcActionIndex(MenuAction menuAction)
+	{
+		switch (menuAction)
+		{
+			case NPC_FIRST_OPTION:
+				return 0;
+			case NPC_SECOND_OPTION:
+				return 1;
+			case NPC_THIRD_OPTION:
+				return 2;
+			case NPC_FOURTH_OPTION:
+				return 3;
+			case NPC_FIFTH_OPTION:
+				return 4;
+			default:
+				return -1;
+		}
 	}
 
 	private boolean shouldDraw(Renderable renderable, boolean drawingUi)
