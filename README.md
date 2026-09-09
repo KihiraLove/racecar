@@ -1,24 +1,27 @@
 # Racecar
 
-Racecar is a RuneLite plugin that transmogrifies a follower pet into the burrowed form of the Doom of Mokhaiotl.
+Racecar is a RuneLite pet transmog plugin intended to replace **Dom** with the burrowed form of the Doom of Mokhaiotl.
 
 ## Current test mode
 
-The plugin currently targets the **Pug** follower so the transmog can be tested without owning Dom.
+The current build is deliberately in test mode. It transmogs **whatever follower pet the local player currently has out**, allowing the Pug to be used for development without relying on the newly-added puppy NPC IDs or display names.
 
-While a Pug is following the local player, Racecar:
+The implementation is based on the known-working code in the `pet-to-npc-transmog` plugin:
 
-- hides the Pug's normal 3D render;
-- renders the Doom of Mokhaiotl's burrowed NPC model at the Pug's location;
-- preserves the real follower's server-driven pathing and orientation;
-- uses Doom's burrow-idle animation while stationary;
-- uses Doom's burrowed-movement animation while the follower is moving.
-
-The target model is built at runtime from RuneLite's `NpcID.DOM_BOSS_BURROWED` composition rather than hardcoded model IDs.
+- uses the real `client.getFollower()` NPC for all server-driven following/pathing;
+- hides that follower through RuneLite's render listener;
+- creates a client-side `RuneLiteObject` replacement;
+- updates its location and orientation every client tick;
+- builds the replacement from the model parts of `NpcID.DOM_BOSS_BURROWED`;
+- uses `AnimationID.DOM_BURROW_IDLE` while stationary;
+- uses `AnimationID.DOM_BURROWED_MOVEMENT` while moving;
+- follows the same `setAnimation` and looping path used by `pet-to-npc-transmog`.
 
 ## Final mode
 
-Once testing is complete, set `TEST_WITH_PUG` in `Racecar.java` to `false`. The source follower then becomes either of the real Dom pet NPC variants:
+After the test transmog is visually confirmed, disabling `TEST_MODE` limits the source follower to:
 
 - `NpcID.DOM_PET`
 - `NpcID.POH_DOM_PET`
+
+The reference `pet-to-npc-transmog` repository is read-only for this project; Racecar contains the implementation changes.
