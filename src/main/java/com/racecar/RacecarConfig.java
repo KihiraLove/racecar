@@ -21,4 +21,15 @@ public interface RacecarConfig extends Config
 	{
 		return 64;
 	}
+
+	@ConfigItem(
+		keyName = "enableBurrowAnimations",
+		name = "Burrow animations",
+		description = "Enable Doom's burrow idle and movement animations. Disabled by default while diagnosing the model-position offset.",
+		position = 1
+	)
+	default boolean enableBurrowAnimations()
+	{
+		return false;
+	}
 }
