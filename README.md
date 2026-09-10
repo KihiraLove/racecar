@@ -35,15 +35,22 @@ Racecar instead uses the hidden server-backed follower as the interaction target
 
 - if RuneLite still generates native menu entries for the hidden follower, Racecar rewrites them to Dom's name and action slots;
 - if hiding the follower also removes those native entries, hovering the hidden follower's convex hull or tile injects a simulated Dom menu;
+- the synthetic target uses RuneLite's normal NPC target color;
 - the simulated `Talk-to`, `Pick-up`, and `Examine` entries forward the corresponding NPC action to the real follower by NPC index.
 
 During Yami test mode those actions still operate on Yami server-side. In final Dom mode they operate on the actual Dom pet.
 
+## Cleanup
+
+Racecar tracks every custom controller it registers. On shutdown or follower replacement, each tracked controller is first marked inactive so it immediately returns no model, then RuneLite deregistration is attempted. This prevents a failed removal from leaving a visible animated copy behind and also allows later disable/re-enable cycles to retry cleanup of stale controllers created by the same plugin classloader.
+
+A controller orphaned by an older Racecar build before this tracking existed may still require one RuneLite client restart to purge.
+
 ## Configuration
 
-`Vertical offset` raises or lowers the final pet-sized animated model relative to the follower tile. Positive values raise the model. The current tuned default is `15`, with a range of `-512` to `512`.
+`Vertical offset` raises or lowers the final pet-sized animated model relative to the follower tile. Positive values raise the model. The current tuned default is `22`, with a range of `-512` to `512`.
 
-`Scale (%)` adjusts the final rendered size without changing follower positioning or animation behavior. The tuned default is `150`. The tuning range is `50` to `200` so the final value can still be adjusted if necessary.
+`Scale (%)` adjusts the final rendered size without changing follower positioning or animation behavior. The tuned default is `220`. The tuning range is `50` to `300` so the final value can still be adjusted if necessary.
 
 The temporary `Use Dom pet model` and `Burrow animations` compatibility switches have been removed. The Dom-model experiment proved incompatible, and the burrow animation is required to produce the intended car form.
 
