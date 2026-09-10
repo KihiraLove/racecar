@@ -19,18 +19,18 @@ public interface RacecarConfig extends Config
 	)
 	default int burrowedVerticalOffset()
 	{
-		return 10;
+		return 15;
 	}
 
-	@Range(min = 50, max = 150)
+	@Range(min = 50, max = 200)
 	@ConfigItem(
 		keyName = "modelScalePercent",
 		name = "Scale (%)",
-		description = "Scales the final pet-sized burrowed Doom model. 100 is the current calculated pet scale.",
+		description = "Scales the final pet-sized burrowed Doom model. 150 is the tuned pet scale.",
 		position = 1
 	)
 	default int modelScalePercent()
 	{
-		return 100;
+		return 150;
 	}
 }
