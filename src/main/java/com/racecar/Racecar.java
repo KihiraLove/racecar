@@ -172,10 +172,6 @@ public class Racecar extends Plugin
 
 			if (domAction == null)
 			{
-				/*
-				 * Do not expose source-pet-specific options that Dom does not have.
-				 * Yami is only a temporary stand-in for testing the transmog.
-				 */
 				menuEntries.remove(i);
 				changed = true;
 				continue;
@@ -251,20 +247,10 @@ public class Racecar extends Plugin
 				continue;
 			}
 
-			/*
-			 * Keep the replacement on the real follower's local point. Vertical
-			 * tuning is applied to the model vertices instead of the object's scene
-			 * Z so it cannot alter which tile the transmog is registered on.
-			 */
 			transmogObject.setLocation(follower.getLocalLocation(), worldView.getPlane());
 			transmogObject.setOrientation(follower.getCurrentOrientation());
 			transmogObject.setRadius(PET_RENDER_RADIUS);
 
-			/*
-			 * The established pet-to-npc-transmog plugin reapplies the model while
-			 * updating the follower. Keep the same behaviour here for the test
-			 * implementation rather than relying on a one-time model assignment.
-			 */
 			if (model != null)
 			{
 				transmogObject.setModel(model);
@@ -308,10 +294,6 @@ public class Racecar extends Plugin
 				continue;
 			}
 
-			/*
-			 * Match pet-to-npc-transmog's working animation path: activate the
-			 * RuneLiteObject, assign the loaded animation, and explicitly loop it.
-			 */
 			transmogObject.setActive(true);
 			transmogObject.setAnimation(animation);
 			transmogObject.setShouldLoop(true);
@@ -354,22 +336,12 @@ public class Racecar extends Plugin
 		{
 			mergedModelData = mergedModelData.cloneVertices();
 
-			/*
-			 * The burrowed boss is a 5x5 NPC. Scale its model by the inverse of
-			 * its configured footprint so the transmog occupies the visual scale
-			 * of a normal 1x1 follower while retaining the original proportions.
-			 */
 			if (footprintSize > 1)
 			{
 				int petScale = Math.max(1, Math.round((float) MODEL_SCALE_BASE / footprintSize));
 				mergedModelData.scale(petScale, petScale, petScale);
 			}
 
-			/*
-			 * Model-space Y is vertical. Positive config values lift the model, so
-			 * translate by the negative value. Applying this after scaling makes the
-			 * configured number correspond to the final pet-sized model.
-			 */
 			if (verticalOffset != 0)
 			{
 				mergedModelData.translate(0, -verticalOffset, 0);
@@ -428,6 +400,7 @@ public class Racecar extends Plugin
 		return true;
 	}
 
+	@SuppressWarnings("deprecation")
 	private void clearTransmog()
 	{
 		for (RuneLiteObject transmogObject : transmogObjects)
@@ -435,6 +408,9 @@ public class Racecar extends Plugin
 			if (transmogObject != null)
 			{
 				transmogObject.setActive(false);
+				transmogObject.setAnimation(null);
+				transmogObject.setModel(null);
+				transmogObject.setFinished(true);
 			}
 		}
 
