@@ -6,30 +6,32 @@ Racecar is a RuneLite pet transmog plugin intended to replace **Dom** with the b
 
 The current build is deliberately in test mode. It only transmogs a follower whose in-game name is **Yami**, so other pets can be taken out without Racecar affecting them.
 
-The implementation is based on the known-working code in the `pet-to-npc-transmog` plugin:
+The real follower remains responsible for server-driven following/pathing and is hidden through RuneLite's render listener. Racecar registers a client-side replacement on the follower's exact local point and orientation and rewrites the hidden follower's right-click menu to use Dom's name/actions.
 
-- uses the real `client.getFollower()` NPC for all server-driven following/pathing;
-- hides that follower through RuneLite's render listener;
-- creates a client-side `RuneLiteObject` replacement;
-- keeps the replacement on the follower's real local tile and orientation every client tick;
-- can render either `NpcID.DOM_PET` directly or the full `NpcID.DOM_BOSS_BURROWED` model;
-- only scales the full boss model from its native 5x5 footprint to a 1x1 pet-sized visual;
-- applies vertical correction in model space so height tuning cannot move the replacement to another tile;
-- can apply `AnimationID.DOM_BURROW_IDLE` while stationary;
-- can apply `AnimationID.DOM_BURROWED_MOVEMENT` while moving;
-- rewrites the hidden follower's right-click menu to use the actions and name from `NpcID.DOM_PET`.
+## Doom model findings
 
-Because the right-click menu remains attached to the real hidden follower, the simulated Dom entries still act on the actual follower during testing.
+Cache/model inspection showed that the burrowed form is primarily an animated pose of Doom's core mesh rather than a separate car-shaped model:
+
+- normal Doom (`14707`) uses models `56469`, `56470`, `56467`, `56466`, and `55956`;
+- burrowed Doom (`14709`) uses the shared core models `56469`, `56470`, and `56467`;
+- Dom (`14519` and `14785`) uses model `56456` for both NPC definitions;
+- applying the boss burrow animations directly to Dom's pet model mangles the mesh, so the pet and boss animation rigs are not compatible enough for that approach.
+
+The incomplete-looking standing Doom seen with animations disabled was expected from `14709`: its composition intentionally omits the two extra model parts used by the normal boss.
+
+## Rendering approach
+
+Racecar now keeps the burrowed boss core model at native scale internally and applies `AnimationID.DOM_BURROW_IDLE` or `AnimationID.DOM_BURROWED_MOVEMENT` at render time.
+
+This is important because RuneLite documents `Client.applyTransformations()` as returning a shared temporary model which becomes invalid after another transformation call. The transformed model is therefore never retained between frames. Each frame is animated at boss scale, then immediately reduced from the 5x5 boss footprint to pet scale before it is drawn.
+
+The scale also respects the NPC composition's width/height scale values rather than assuming a uniform 128/128 boss scale.
 
 ## Configuration
 
-`Vertical offset` raises or lowers the rendered model relative to the follower tile. Positive values raise the model. The default is `64`, with a tuning range of `-512` to `512`.
+`Vertical offset` raises or lowers the final pet-sized animated model relative to the follower tile. Positive values raise the model. The default is `64`, with a tuning range of `-512` to `512`.
 
-`Use Dom pet model` defaults to enabled. This loads the actual `NpcID.DOM_PET` model at its native pet scale instead of scaling down the full Doom boss model. It exists specifically to test whether the boss burrow animations are compatible with Dom's pet rig.
-
-`Burrow animations` defaults to enabled. It applies `DOM_BURROW_IDLE` and `DOM_BURROWED_MOVEMENT` to whichever model source is selected.
-
-For the current compatibility test, leave both `Use Dom pet model` and `Burrow animations` enabled. If Dom folds into the expected burrowed/car form, the pet and boss models are compatible enough to use the pet model directly. If it deforms or remains incorrect, disable `Use Dom pet model` to return to the scaled boss-model path.
+The temporary `Use Dom pet model` and `Burrow animations` compatibility switches have been removed. The Dom-model experiment proved incompatible, and the burrow animation is required to produce the intended car form.
 
 ## Final mode
 
