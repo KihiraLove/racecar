@@ -4,7 +4,7 @@ Racecar is a RuneLite pet transmog plugin intended to replace **Dom** with the b
 
 ## Current test mode
 
-The current build is deliberately in test mode. It transmogs **whatever follower pet the local player currently has out**, allowing the Pug to be used for development without relying on the newly-added puppy NPC IDs or display names.
+The current build is deliberately in test mode. It only transmogs a follower whose in-game name is **Yami**, so other pets can be taken out without Racecar affecting them.
 
 The implementation is based on the known-working code in the `pet-to-npc-transmog` plugin:
 
@@ -14,6 +14,7 @@ The implementation is based on the known-working code in the `pet-to-npc-transmo
 - updates its location and orientation every client tick;
 - builds the replacement from the model parts of `NpcID.DOM_BOSS_BURROWED`;
 - scales the burrowed Doom from its native 5x5 footprint to a 1x1 pet-sized visual;
+- anchors the replacement to the follower tile's terrain height and lifts it above the terrain to compensate for the burrowed boss model/animations;
 - uses `AnimationID.DOM_BURROW_IDLE` while stationary;
 - uses `AnimationID.DOM_BURROWED_MOVEMENT` while moving;
 - follows the same `setAnimation` and looping path used by `pet-to-npc-transmog`;
