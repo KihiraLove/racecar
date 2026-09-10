@@ -1,61 +1,62 @@
 package com.racecar;
 
-import com.google.inject.Provides;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import javax.annotation.Nullable;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Animation;
-import net.runelite.api.AnimationController;
 import net.runelite.api.Client;
+import net.runelite.api.GameObject;
+import net.runelite.api.GameState;
+import net.runelite.api.MenuAction;
+import net.runelite.api.MenuEntry;
 import net.runelite.api.Model;
 import net.runelite.api.ModelData;
 import net.runelite.api.NPC;
 import net.runelite.api.NPCComposition;
 import net.runelite.api.Perspective;
-import net.runelite.api.Renderable;
-import net.runelite.api.RuneLiteObjectController;
+import net.runelite.api.Scene;
+import net.runelite.api.TileObject;
 import net.runelite.api.WorldView;
 import net.runelite.api.events.ClientTick;
+import net.runelite.api.events.GameStateChanged;
+import net.runelite.api.events.MenuEntryAdded;
 import net.runelite.api.gameval.AnimationID;
 import net.runelite.api.gameval.NpcID;
 import net.runelite.client.callback.ClientThread;
-import net.runelite.client.callback.Hooks;
+import net.runelite.client.callback.RenderCallback;
+import net.runelite.client.callback.RenderCallbackManager;
 import net.runelite.client.config.ConfigManager;
+import net.runelite.client.config.ConfigProfile;
 import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.events.ConfigChanged;
+import net.runelite.client.events.ProfileChanged;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
+import net.runelite.client.plugins.gpu.GpuPlugin;
 
 @Slf4j
 @PluginDescriptor(
 	name = "Racecar",
-	description = "Transmogrifies Dom into the burrowed form of the Doom of Mokhaiotl",
+	description = "Transmogrifies Dom into the burrowed form of the Doom of Mokhaiotl. Requires RuneLite GPU.",
 	tags = {"doom", "mokhaiotl", "dom", "pet", "transmog", "racecar"}
 )
 public class Racecar extends Plugin
 {
-	/*
-	 * Test mode uses Yami as the stand-in follower. Set to false once the plugin
-	 * is ready to target the real Dom pet variants only.
-	 */
-	private static final boolean TEST_MODE = true;
-	private static final String TEST_FOLLOWER_NAME = "Yami";
+	private static final String CONFIG_GROUP = "racecar";
+	private static final String BURROWED_KEY = "burrowed";
+	private static final String METAMORPHOSIS = "Metamorphosis";
+	private static final String EMOTE = "Emote";
 
 	private static final int TARGET_NPC_ID = NpcID.DOM_BOSS_BURROWED;
 	private static final int IDLE_ANIMATION_ID = AnimationID.DOM_BURROW_IDLE;
 	private static final int MOVEMENT_ANIMATION_ID = AnimationID.DOM_BURROWED_MOVEMENT;
 	private static final int PET_RENDER_RADIUS = 60;
 
-	/*
-	 * Controllers can outlive the currently referenced transmog object until the
-	 * client thread removes them. A concurrent set lets startup/shutdown snapshot
-	 * them safely even though those methods may run on the Swing event thread.
-	 */
 	private static final Set<RacecarObject> ACTIVE_OBJECTS = ConcurrentHashMap.newKeySet();
 
 	@Inject
@@ -65,23 +66,28 @@ public class Racecar extends Plugin
 	private ClientThread clientThread;
 
 	@Inject
-	private Hooks hooks;
+	private RenderCallbackManager renderCallbackManager;
 
 	@Inject
-	private RacecarConfig config;
+	private ConfigManager configManager;
 
-	private final Hooks.RenderableDrawListener drawListener = this::shouldDraw;
+	private final RenderCallback renderCallback = new RenderCallback()
+	{
+		@Override
+		public boolean drawObject(Scene scene, TileObject object)
+		{
+			return !transmogInitialized || !(object instanceof GameObject)
+				|| ((GameObject) object).getRenderable() != sourceFollower;
+		}
+	};
 
-	private boolean transmogInitialized;
+	private volatile boolean transmogInitialized;
+	private volatile boolean running;
+	private boolean burrowed;
+	private ConfigProfile profile;
 	private NPC sourceFollower;
 	private MovementState movementState;
 	private RacecarObject transmogObject;
-
-	@Provides
-	RacecarConfig provideConfig(ConfigManager configManager)
-	{
-		return configManager.getConfig(RacecarConfig.class);
-	}
 
 	@Override
 	protected void startUp()
@@ -89,29 +95,42 @@ public class Racecar extends Plugin
 		log.debug("Racecar started");
 		cleanupTrackedObjects();
 		resetState();
-		hooks.registerRenderableDrawListener(drawListener);
+		running = true;
+		clientThread.invoke(this::loadProfile);
+		renderCallbackManager.register(renderCallback);
 	}
 
 	@Override
 	protected void shutDown()
 	{
 		log.debug("Racecar stopped");
+		running = false;
 		try
 		{
 			clearTransmog();
 		}
 		finally
 		{
-			hooks.unregisterRenderableDrawListener(drawListener);
+			renderCallbackManager.unregister(renderCallback);
 		}
 	}
 
 	@Subscribe
 	public void onClientTick(ClientTick event)
 	{
+		if (!running)
+		{
+			return;
+		}
+
+		if (profile != configManager.getProfile())
+		{
+			loadProfile();
+		}
+
 		NPC follower = client.getFollower();
 
-		if (!isSourceFollower(follower))
+		if (!canTransmog(follower))
 		{
 			if (transmogInitialized || sourceFollower != null || transmogObject != null)
 			{
@@ -128,15 +147,172 @@ public class Racecar extends Plugin
 
 		if (!transmogInitialized)
 		{
-			if (!initializeTransmogObject(follower))
+			if (!burrowed
+				|| !initializeTransmogObject(follower, movementAnimationId(follower), RacecarObject.Form.BURROWED))
 			{
 				return;
 			}
-			transmogInitialized = true;
 		}
 
-		updateTransmogObject(follower);
+		setTransmogLocation(follower);
+		if (transmogObject.isPlayingAction())
+		{
+			if (!transmogObject.isAnimationFinished())
+			{
+				return;
+			}
+			if (!burrowed)
+			{
+				clearTransmog();
+				return;
+			}
+		}
 		updateFollowerMovement(follower);
+	}
+
+	@Subscribe
+	public void onMenuEntryAdded(MenuEntryAdded event)
+	{
+		MenuEntry entry = event.getMenuEntry();
+		NPC follower = entry.getNpc();
+		if (!running || entry.getType() != MenuAction.EXAMINE_NPC
+			|| follower != client.getFollower() || !canTransmog(follower))
+		{
+			return;
+		}
+
+		ConfigProfile menuProfile = configManager.getProfile();
+		client.getMenu().createMenuEntry(-1)
+			.setOption(METAMORPHOSIS)
+			.setTarget(entry.getTarget())
+			.setIdentifier(entry.getIdentifier())
+			.setWorldViewId(entry.getWorldViewId())
+			.setType(MenuAction.RUNELITE)
+			.onClick(clicked -> metamorphose(follower, menuProfile));
+
+		if (profile == menuProfile && isBurrowedFollower(follower))
+		{
+			client.getMenu().createMenuEntry(-2)
+				.setOption(EMOTE)
+				.setTarget(entry.getTarget())
+				.setIdentifier(entry.getIdentifier())
+				.setWorldViewId(entry.getWorldViewId())
+				.setType(MenuAction.RUNELITE)
+				.onClick(clicked -> emote(follower, menuProfile));
+		}
+	}
+
+	private boolean isBurrowedFollower(NPC follower)
+	{
+		return burrowed && sourceFollower == follower && transmogInitialized
+			&& transmogObject != null && !transmogObject.isTransitioning();
+	}
+
+	private void emote(NPC follower, ConfigProfile menuProfile)
+	{
+		if (!running || menuProfile != configManager.getProfile() || profile != menuProfile
+			|| follower != client.getFollower() || !canTransmog(follower)
+			|| !isBurrowedFollower(follower) || transmogObject.isPlayingAction())
+		{
+			return;
+		}
+
+		if (setTransmogAnimation(AnimationID.DOM_BURROWED_EXPLOSION, RacecarObject.Form.EMOTE))
+		{
+			movementState = null;
+		}
+	}
+
+	private void metamorphose(NPC follower, ConfigProfile menuProfile)
+	{
+		if (!running || menuProfile != configManager.getProfile()
+			|| follower != client.getFollower() || !canTransmog(follower))
+		{
+			return;
+		}
+		if (profile != menuProfile)
+		{
+			loadProfile();
+		}
+		if (sourceFollower != follower)
+		{
+			clearTransmog();
+			sourceFollower = follower;
+		}
+		if (transmogObject != null && transmogObject.isPlayingAction())
+		{
+			return;
+		}
+
+		boolean nextBurrowed = !burrowed;
+		int animationId = nextBurrowed ? AnimationID.DOM_BURROW : AnimationID.DOM_BURROWED_EMERGE;
+		if (transmogObject == null)
+		{
+			if (!initializeTransmogObject(follower, animationId, RacecarObject.Form.TRANSITION))
+			{
+				return;
+			}
+		}
+		else if (!setTransmogAnimation(animationId, RacecarObject.Form.TRANSITION))
+		{
+			return;
+		}
+
+		movementState = null;
+		burrowed = nextBurrowed;
+		configManager.setConfiguration(CONFIG_GROUP, BURROWED_KEY, burrowed);
+	}
+
+	@Subscribe
+	public void onProfileChanged(ProfileChanged event)
+	{
+		clientThread.invoke(this::loadProfile);
+	}
+
+	@Subscribe
+	public void onConfigChanged(ConfigChanged event)
+	{
+		if (CONFIG_GROUP.equals(event.getGroup()) && BURROWED_KEY.equals(event.getKey())
+			&& event.getProfile() == null)
+		{
+			clientThread.invoke(() ->
+			{
+				if (running && (profile != configManager.getProfile() || burrowed != readBurrowed()))
+				{
+					loadProfile();
+				}
+			});
+		}
+	}
+
+	private void loadProfile()
+	{
+		if (running)
+		{
+			clearTransmog();
+			profile = configManager.getProfile();
+			burrowed = readBurrowed();
+		}
+	}
+
+	private boolean readBurrowed()
+	{
+		return Boolean.parseBoolean(configManager.getConfiguration(CONFIG_GROUP, BURROWED_KEY));
+	}
+
+	@Subscribe
+	public void onGameStateChanged(GameStateChanged event)
+	{
+		if (event.getGameState() != GameState.LOGGED_IN)
+		{
+			clearTransmog();
+		}
+	}
+
+	private boolean canTransmog(NPC follower)
+	{
+		return client.getGameState() == GameState.LOGGED_IN
+			&& client.getDrawCallbacks() instanceof GpuPlugin && isSourceFollower(follower);
 	}
 
 	private boolean isSourceFollower(NPC follower)
@@ -146,21 +322,17 @@ public class Racecar extends Plugin
 			return false;
 		}
 
-		if (TEST_MODE)
-		{
-			return TEST_FOLLOWER_NAME.equalsIgnoreCase(follower.getName());
-		}
-
 		return follower.getId() == NpcID.DOM_PET || follower.getId() == NpcID.POH_DOM_PET;
 	}
 
-	private boolean initializeTransmogObject(NPC follower)
+	private boolean initializeTransmogObject(NPC follower, int animationId, RacecarObject.Form form)
 	{
 		NPCComposition composition = client.getNpcDefinition(TARGET_NPC_ID);
-		Model model = createBurrowedDoomModel(composition);
-		if (composition == null || model == null)
+		Model model = createDoomModel(composition);
+		Model transitionModel = createDoomModel(client.getNpcDefinition(NpcID.DOM_BOSS));
+		if (composition == null || model == null || transitionModel == null)
 		{
-			log.debug("Unable to create burrowed Doom model for follower {} ({})",
+			log.debug("Unable to create Racecar models for follower {} ({})",
 				follower.getName(), follower.getId());
 			return false;
 		}
@@ -169,14 +341,12 @@ public class Racecar extends Plugin
 		int horizontalScale = Math.max(1, Math.round((float) composition.getWidthScale() / footprintSize));
 		int verticalScale = Math.max(1, Math.round((float) composition.getHeightScale() / footprintSize));
 
-		transmogObject = new RacecarObject(client, model, horizontalScale, verticalScale);
+		transmogObject = new RacecarObject(client, model, transitionModel, horizontalScale, verticalScale);
 		transmogObject.setRadius(PET_RENDER_RADIUS);
 		setTransmogLocation(follower);
-		transmogObject.setVerticalOffset(config.burrowedVerticalOffset());
-		transmogObject.setModelScalePercent(config.modelScalePercent());
 
-		movementState = getMovementState(follower);
-		if (!setTransmogAnimation(movementState))
+		movementState = form == RacecarObject.Form.TRANSITION ? null : getMovementState(follower);
+		if (!setTransmogAnimation(animationId, form))
 		{
 			transmogObject.clear();
 			transmogObject = null;
@@ -186,26 +356,12 @@ public class Racecar extends Plugin
 
 		client.registerRuneLiteObject(transmogObject);
 		ACTIVE_OBJECTS.add(transmogObject);
+		transmogInitialized = true;
 
 		log.debug(
-			"Racecar transmog initialized for follower {} ({}) using target NPC {}, base scale {}/{}, visual scale {}%",
-			follower.getName(), follower.getId(), TARGET_NPC_ID, horizontalScale, verticalScale,
-			config.modelScalePercent());
+			"Racecar transmog initialized for follower {} ({}) using target NPC {}, base scale {}/{}",
+			follower.getName(), follower.getId(), TARGET_NPC_ID, horizontalScale, verticalScale);
 		return true;
-	}
-
-	private void updateTransmogObject(NPC follower)
-	{
-		if (transmogObject == null)
-		{
-			return;
-		}
-
-		setTransmogLocation(follower);
-		transmogObject.setOrientation(follower.getCurrentOrientation());
-		transmogObject.setRadius(PET_RENDER_RADIUS);
-		transmogObject.setVerticalOffset(config.burrowedVerticalOffset());
-		transmogObject.setModelScalePercent(config.modelScalePercent());
 	}
 
 	private void setTransmogLocation(NPC follower)
@@ -215,7 +371,7 @@ public class Racecar extends Plugin
 			return;
 		}
 
-		WorldView worldView = client.getTopLevelWorldView();
+		WorldView worldView = follower.getWorldView();
 		transmogObject.setLocation(follower.getLocalLocation(), worldView.getPlane());
 		transmogObject.setZ(Perspective.getTileHeight(client, follower.getLocalLocation(), worldView.getPlane()));
 		transmogObject.setOrientation(follower.getCurrentOrientation());
@@ -229,7 +385,7 @@ public class Racecar extends Plugin
 			return;
 		}
 
-		if (setTransmogAnimation(newState))
+		if (setTransmogAnimation(movementAnimationId(follower), RacecarObject.Form.BURROWED))
 		{
 			movementState = newState;
 		}
@@ -242,16 +398,19 @@ public class Racecar extends Plugin
 			: MovementState.STANDING;
 	}
 
-	private boolean setTransmogAnimation(MovementState state)
+	private int movementAnimationId(NPC follower)
+	{
+		boolean moving = getMovementState(follower) == MovementState.MOVING;
+		return moving ? MOVEMENT_ANIMATION_ID : IDLE_ANIMATION_ID;
+	}
+
+	private boolean setTransmogAnimation(int animationId, RacecarObject.Form form)
 	{
 		if (transmogObject == null)
 		{
 			return false;
 		}
 
-		int animationId = state == MovementState.MOVING
-			? MOVEMENT_ANIMATION_ID
-			: IDLE_ANIMATION_ID;
 		Animation animation = client.loadAnimation(animationId);
 		if (animation == null)
 		{
@@ -259,11 +418,11 @@ public class Racecar extends Plugin
 			return false;
 		}
 
-		transmogObject.setAnimation(animation);
+		transmogObject.setAnimation(animation, form);
 		return true;
 	}
 
-	private Model createBurrowedDoomModel(NPCComposition composition)
+	private Model createDoomModel(NPCComposition composition)
 	{
 		if (composition == null)
 		{
@@ -289,20 +448,6 @@ public class Racecar extends Plugin
 		return mergedModelData == null ? null : mergedModelData.light();
 	}
 
-	private boolean shouldDraw(Renderable renderable, boolean drawingUi)
-	{
-		if (renderable instanceof NPC && transmogInitialized)
-		{
-			NPC npc = (NPC) renderable;
-			if (npc == sourceFollower)
-			{
-				return false;
-			}
-		}
-
-		return true;
-	}
-
 	private void clearTransmog()
 	{
 		cleanupTrackedObjects();
@@ -322,11 +467,6 @@ public class Racecar extends Plugin
 			return;
 		}
 
-		/*
-		 * Blanking only changes Racecar-owned state, so it is safe to do
-		 * immediately even when startup/shutdown is running on Swing's AWT thread.
-		 * This makes the model disappear before the client-thread registry removal.
-		 */
 		for (RacecarObject object : objects)
 		{
 			if (object != null)
@@ -335,10 +475,6 @@ public class Racecar extends Plugin
 			}
 		}
 
-		/*
-		 * The RuneLite object registry is client-thread-only. ClientThread.invoke()
-		 * executes immediately when reached from ClientTick and queues otherwise.
-		 */
 		clientThread.invoke(() ->
 		{
 			for (RacecarObject object : objects)
@@ -389,95 +525,5 @@ public class Racecar extends Plugin
 	{
 		STANDING,
 		MOVING
-	}
-
-	private static final class RacecarObject extends RuneLiteObjectController
-	{
-		private final Client client;
-		private final Model baseModel;
-		private final int horizontalScale;
-		private final int verticalScale;
-
-		@Nullable
-		private AnimationController animationController;
-		private volatile boolean active = true;
-		private int verticalOffset;
-		private int modelScalePercent = 100;
-
-		private RacecarObject(Client client, Model baseModel, int horizontalScale, int verticalScale)
-		{
-			this.client = client;
-			this.baseModel = baseModel;
-			this.horizontalScale = horizontalScale;
-			this.verticalScale = verticalScale;
-		}
-
-		private void setAnimation(Animation animation)
-		{
-			if (active)
-			{
-				animationController = new AnimationController(client, animation);
-			}
-		}
-
-		private void setVerticalOffset(int verticalOffset)
-		{
-			this.verticalOffset = verticalOffset;
-		}
-
-		private void setModelScalePercent(int modelScalePercent)
-		{
-			this.modelScalePercent = modelScalePercent;
-		}
-
-		private void clear()
-		{
-			animationController = null;
-			active = false;
-		}
-
-		@Override
-		public void tick(int ticksSinceLastFrame)
-		{
-			if (active && animationController != null)
-			{
-				animationController.tick(ticksSinceLastFrame);
-			}
-		}
-
-		@Override
-		public Model getModel()
-		{
-			if (!active || animationController == null)
-			{
-				return null;
-			}
-
-			/*
-			 * RuneLite documents applyTransformations() as returning a shared,
-			 * temporary Model which becomes invalid after the next transformation
-			 * call. AnimationController.animate() uses that API. Therefore the
-			 * animated model must be consumed immediately and never retained.
-			 *
-			 * Apply the boss animation at native scale first so its large root/model
-			 * translations are transformed along with the mesh. Then scale this one
-			 * transient animated frame down to the 1x1 pet footprint immediately
-			 * before RuneLite draws it. The user scale is applied as a multiplier on
-			 * top of that calculated pet scale.
-			 */
-			Model renderedModel = animationController.animate(baseModel);
-			int renderedHorizontalScale = Math.max(1,
-				Math.round(horizontalScale * modelScalePercent / 100.0f));
-			int renderedVerticalScale = Math.max(1,
-				Math.round(verticalScale * modelScalePercent / 100.0f));
-			renderedModel.scale(renderedHorizontalScale, renderedVerticalScale, renderedHorizontalScale);
-
-			if (verticalOffset != 0)
-			{
-				renderedModel.translate(0, -verticalOffset, 0);
-			}
-
-			return renderedModel;
-		}
 	}
 }
