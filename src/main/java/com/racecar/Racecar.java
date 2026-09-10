@@ -222,6 +222,7 @@ public class Racecar extends Plugin
 		transmogObject.setRadius(PET_RENDER_RADIUS);
 		setTransmogLocation(follower);
 		transmogObject.setVerticalOffset(config.burrowedVerticalOffset());
+		transmogObject.setModelScalePercent(config.modelScalePercent());
 
 		movementState = getMovementState(follower);
 		if (!setTransmogAnimation(movementState))
@@ -234,8 +235,9 @@ public class Racecar extends Plugin
 		client.registerRuneLiteObject(transmogObject);
 
 		log.debug(
-			"Racecar transmog initialized for follower {} ({}) using target NPC {}, scale {}/{}",
-			follower.getName(), follower.getId(), TARGET_NPC_ID, horizontalScale, verticalScale);
+			"Racecar transmog initialized for follower {} ({}) using target NPC {}, base scale {}/{}, visual scale {}%",
+			follower.getName(), follower.getId(), TARGET_NPC_ID, horizontalScale, verticalScale,
+			config.modelScalePercent());
 		return true;
 	}
 
@@ -250,6 +252,7 @@ public class Racecar extends Plugin
 		transmogObject.setOrientation(follower.getCurrentOrientation());
 		transmogObject.setRadius(PET_RENDER_RADIUS);
 		transmogObject.setVerticalOffset(config.burrowedVerticalOffset());
+		transmogObject.setModelScalePercent(config.modelScalePercent());
 	}
 
 	private void setTransmogLocation(NPC follower)
@@ -420,6 +423,7 @@ public class Racecar extends Plugin
 		@Nullable
 		private AnimationController animationController;
 		private int verticalOffset;
+		private int modelScalePercent = 100;
 
 		private RacecarObject(Client client, Model baseModel, int horizontalScale, int verticalScale)
 		{
@@ -437,6 +441,11 @@ public class Racecar extends Plugin
 		private void setVerticalOffset(int verticalOffset)
 		{
 			this.verticalOffset = verticalOffset;
+		}
+
+		private void setModelScalePercent(int modelScalePercent)
+		{
+			this.modelScalePercent = modelScalePercent;
 		}
 
 		private void clear()
@@ -470,10 +479,15 @@ public class Racecar extends Plugin
 			 * Apply the boss animation at native scale first so its large root/model
 			 * translations are transformed along with the mesh. Then scale this one
 			 * transient animated frame down to the 1x1 pet footprint immediately
-			 * before RuneLite draws it.
+			 * before RuneLite draws it. The user scale is applied as a multiplier on
+			 * top of that calculated pet scale.
 			 */
 			Model renderedModel = animationController.animate(baseModel);
-			renderedModel.scale(horizontalScale, verticalScale, horizontalScale);
+			int renderedHorizontalScale = Math.max(1,
+				Math.round(horizontalScale * modelScalePercent / 100.0f));
+			int renderedVerticalScale = Math.max(1,
+				Math.round(verticalScale * modelScalePercent / 100.0f));
+			renderedModel.scale(renderedHorizontalScale, renderedVerticalScale, renderedHorizontalScale);
 
 			if (verticalOffset != 0)
 			{
