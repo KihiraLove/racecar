@@ -1,6 +1,8 @@
 package com.racecar;
 
 import com.google.inject.Provides;
+import java.awt.Polygon;
+import java.awt.Shape;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -18,10 +20,13 @@ import net.runelite.api.ModelData;
 import net.runelite.api.NPC;
 import net.runelite.api.NPCComposition;
 import net.runelite.api.Perspective;
+import net.runelite.api.Point;
 import net.runelite.api.Renderable;
 import net.runelite.api.RuneLiteObjectController;
 import net.runelite.api.WorldView;
+import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.events.ClientTick;
+import net.runelite.api.events.MenuEntryAdded;
 import net.runelite.api.events.MenuOpened;
 import net.runelite.api.gameval.AnimationID;
 import net.runelite.api.gameval.NpcID;
@@ -51,6 +56,7 @@ public class Racecar extends Plugin
 	private static final int IDLE_ANIMATION_ID = AnimationID.DOM_BURROW_IDLE;
 	private static final int MOVEMENT_ANIMATION_ID = AnimationID.DOM_BURROWED_MOVEMENT;
 	private static final int PET_RENDER_RADIUS = 60;
+	private static final int SYNTHETIC_MENU_IDENTIFIER = 0x52414345; // "RACE"
 
 	@Inject
 	private Client client;
@@ -123,6 +129,27 @@ public class Racecar extends Plugin
 		updateFollowerMovement(follower);
 	}
 
+	/**
+	 * RuneLiteObjectController has no native interaction/clickbox API. If hiding
+	 * the real follower also prevents RuneLite from generating NPC menu entries,
+	 * add an equivalent Dom menu while the mouse is over the hidden follower's
+	 * model hull or tile. The menu callbacks dispatch the real NPC operation to
+	 * the server-backed follower.
+	 */
+	@Subscribe
+	public void onMenuEntryAdded(MenuEntryAdded event)
+	{
+		if (!transmogInitialized || sourceFollower == null
+			|| event.getMenuEntry().getType() != MenuAction.WALK
+			|| !isMouseOverFollowerInteractionArea()
+			|| hasSyntheticDomMenuEntry())
+		{
+			return;
+		}
+
+		addSyntheticDomMenuEntries();
+	}
+
 	@Subscribe
 	public void onMenuOpened(MenuOpened event)
 	{
@@ -139,8 +166,20 @@ public class Racecar extends Plugin
 
 		String[] domActions = domComposition.getActions();
 		List<MenuEntry> menuEntries = new ArrayList<>(Arrays.asList(event.getMenuEntries()));
-		boolean changed = false;
+		boolean hasNativeFollowerEntries = menuEntries.stream()
+			.anyMatch(menuEntry -> menuEntry.getNpc() == sourceFollower);
 
+		/*
+		 * Prefer native NPC entries when the hidden follower remains pickable.
+		 * They already contain the exact server action parameters, so remove the
+		 * synthetic fallback and only rewrite their visible Dom labels/actions.
+		 */
+		if (hasNativeFollowerEntries)
+		{
+			menuEntries.removeIf(this::isSyntheticDomMenuEntry);
+		}
+
+		boolean changed = hasNativeFollowerEntries;
 		for (int i = menuEntries.size() - 1; i >= 0; i--)
 		{
 			MenuEntry menuEntry = menuEntries.get(i);
@@ -156,7 +195,6 @@ public class Racecar extends Plugin
 			{
 				menuEntry.setOption("Examine");
 				menuEntry.setTarget(domTarget);
-				changed = true;
 				continue;
 			}
 
@@ -173,19 +211,119 @@ public class Racecar extends Plugin
 			if (domAction == null)
 			{
 				menuEntries.remove(i);
-				changed = true;
 				continue;
 			}
 
 			menuEntry.setOption(domAction);
 			menuEntry.setTarget(domTarget);
-			changed = true;
 		}
 
 		if (changed)
 		{
 			client.getMenu().setMenuEntries(menuEntries.toArray(new MenuEntry[0]));
 		}
+	}
+
+	private void addSyntheticDomMenuEntries()
+	{
+		NPCComposition domComposition = client.getNpcDefinition(MENU_NPC_ID);
+		if (domComposition == null)
+		{
+			return;
+		}
+
+		String domName = domComposition.getName();
+		String[] domActions = domComposition.getActions();
+
+		/*
+		 * Append Examine first, then NPC operations in reverse order so the first
+		 * NPC operation (Talk-to for Dom) is the final/top entry, matching normal
+		 * NPC left-click/right-click ordering.
+		 */
+		createSyntheticDomMenuEntry("Examine", domName, MenuAction.EXAMINE_NPC);
+
+		if (domActions == null)
+		{
+			return;
+		}
+
+		for (int actionIndex = Math.min(4, domActions.length - 1); actionIndex >= 0; actionIndex--)
+		{
+			String option = domActions[actionIndex];
+			if (option == null)
+			{
+				continue;
+			}
+
+			MenuAction action = getNpcMenuAction(actionIndex);
+			if (action != null)
+			{
+				createSyntheticDomMenuEntry(option, domName, action);
+			}
+		}
+	}
+
+	private void createSyntheticDomMenuEntry(String option, String target, MenuAction followerAction)
+	{
+		client.getMenu().createMenuEntry(-1)
+			.setOption(option)
+			.setTarget(target)
+			.setIdentifier(SYNTHETIC_MENU_IDENTIFIER)
+			.setType(MenuAction.RUNELITE)
+			.onClick(menuEntry -> invokeFollowerAction(followerAction, option, target));
+	}
+
+	private void invokeFollowerAction(MenuAction action, String option, String target)
+	{
+		NPC follower = sourceFollower;
+		if (follower == null)
+		{
+			return;
+		}
+
+		LocalPoint location = follower.getLocalLocation();
+		client.menuAction(
+			location.getSceneX(),
+			location.getSceneY(),
+			action,
+			follower.getIndex(),
+			-1,
+			option,
+			target);
+	}
+
+	private boolean isMouseOverFollowerInteractionArea()
+	{
+		if (sourceFollower == null)
+		{
+			return false;
+		}
+
+		Point mouse = client.getMouseCanvasPosition();
+		if (mouse == null)
+		{
+			return false;
+		}
+
+		Shape followerHull = sourceFollower.getConvexHull();
+		if (followerHull != null && followerHull.contains(mouse.getX(), mouse.getY()))
+		{
+			return true;
+		}
+
+		Polygon tilePoly = sourceFollower.getCanvasTilePoly();
+		return tilePoly != null && tilePoly.contains(mouse.getX(), mouse.getY());
+	}
+
+	private boolean hasSyntheticDomMenuEntry()
+	{
+		return Arrays.stream(client.getMenu().getMenuEntries()).anyMatch(this::isSyntheticDomMenuEntry);
+	}
+
+	private boolean isSyntheticDomMenuEntry(MenuEntry menuEntry)
+	{
+		return menuEntry.getType() == MenuAction.RUNELITE
+			&& menuEntry.getIdentifier() == SYNTHETIC_MENU_IDENTIFIER;
 	}
 
 	private boolean isSourceFollower(NPC follower)
@@ -368,6 +506,26 @@ public class Racecar extends Plugin
 				return 4;
 			default:
 				return -1;
+		}
+	}
+
+	@Nullable
+	private static MenuAction getNpcMenuAction(int actionIndex)
+	{
+		switch (actionIndex)
+		{
+			case 0:
+				return MenuAction.NPC_FIRST_OPTION;
+			case 1:
+				return MenuAction.NPC_SECOND_OPTION;
+			case 2:
+				return MenuAction.NPC_THIRD_OPTION;
+			case 3:
+				return MenuAction.NPC_FOURTH_OPTION;
+			case 4:
+				return MenuAction.NPC_FIFTH_OPTION;
+			default:
+				return null;
 		}
 	}
 
