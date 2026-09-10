@@ -5,8 +5,11 @@ import java.awt.Polygon;
 import java.awt.Shape;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import javax.annotation.Nullable;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
@@ -35,6 +38,8 @@ import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
+import net.runelite.client.ui.JagexColors;
+import net.runelite.client.util.ColorUtil;
 
 @Slf4j
 @PluginDescriptor(
@@ -57,6 +62,14 @@ public class Racecar extends Plugin
 	private static final int MOVEMENT_ANIMATION_ID = AnimationID.DOM_BURROWED_MOVEMENT;
 	private static final int PET_RENDER_RADIUS = 60;
 	private static final int SYNTHETIC_MENU_IDENTIFIER = 0x52414345; // "RACE"
+
+	/*
+	 * Keep every controller created by this classloader until it is confirmed
+	 * removed. This lets a later disable/re-enable clean up an older controller
+	 * even if the plugin's current transmogObject reference was replaced.
+	 */
+	private static final Set<RacecarObject> ACTIVE_OBJECTS =
+		Collections.newSetFromMap(new IdentityHashMap<RacecarObject, Boolean>());
 
 	@Inject
 	private Client client;
@@ -84,6 +97,7 @@ public class Racecar extends Plugin
 	protected void startUp()
 	{
 		log.debug("Racecar started");
+		cleanupTrackedObjects();
 		resetState();
 		hooks.registerRenderableDrawListener(drawListener);
 	}
@@ -92,8 +106,14 @@ public class Racecar extends Plugin
 	protected void shutDown()
 	{
 		log.debug("Racecar stopped");
-		hooks.unregisterRenderableDrawListener(drawListener);
-		clearTransmog();
+		try
+		{
+			clearTransmog();
+		}
+		finally
+		{
+			hooks.unregisterRenderableDrawListener(drawListener);
+		}
 	}
 
 	@Subscribe
@@ -233,6 +253,7 @@ public class Racecar extends Plugin
 		}
 
 		String domName = domComposition.getName();
+		String domTarget = ColorUtil.wrapWithColorTag(domName, JagexColors.MENU_TARGET);
 		String[] domActions = domComposition.getActions();
 
 		/*
@@ -240,7 +261,7 @@ public class Racecar extends Plugin
 		 * NPC operation (Talk-to for Dom) is the final/top entry, matching normal
 		 * NPC left-click/right-click ordering.
 		 */
-		createSyntheticDomMenuEntry("Examine", domName, MenuAction.EXAMINE_NPC);
+		createSyntheticDomMenuEntry("Examine", domTarget, domName, MenuAction.EXAMINE_NPC);
 
 		if (domActions == null)
 		{
@@ -258,19 +279,20 @@ public class Racecar extends Plugin
 			MenuAction action = getNpcMenuAction(actionIndex);
 			if (action != null)
 			{
-				createSyntheticDomMenuEntry(option, domName, action);
+				createSyntheticDomMenuEntry(option, domTarget, domName, action);
 			}
 		}
 	}
 
-	private void createSyntheticDomMenuEntry(String option, String target, MenuAction followerAction)
+	private void createSyntheticDomMenuEntry(
+		String option, String displayTarget, String actionTarget, MenuAction followerAction)
 	{
 		client.getMenu().createMenuEntry(-1)
 			.setOption(option)
-			.setTarget(target)
+			.setTarget(displayTarget)
 			.setIdentifier(SYNTHETIC_MENU_IDENTIFIER)
 			.setType(MenuAction.RUNELITE)
-			.onClick(menuEntry -> invokeFollowerAction(followerAction, option, target));
+			.onClick(menuEntry -> invokeFollowerAction(followerAction, option, actionTarget));
 	}
 
 	private void invokeFollowerAction(MenuAction action, String option, String target)
@@ -365,12 +387,14 @@ public class Racecar extends Plugin
 		movementState = getMovementState(follower);
 		if (!setTransmogAnimation(movementState))
 		{
+			transmogObject.clear();
 			transmogObject = null;
 			movementState = null;
 			return false;
 		}
 
 		client.registerRuneLiteObject(transmogObject);
+		ACTIVE_OBJECTS.add(transmogObject);
 
 		log.debug(
 			"Racecar transmog initialized for follower {} ({}) using target NPC {}, base scale {}/{}, visual scale {}%",
@@ -476,18 +500,18 @@ public class Racecar extends Plugin
 
 	private String replaceFollowerName(String target, String domName)
 	{
-		if (target == null || domName == null)
+		if (domName == null)
 		{
 			return target;
 		}
 
 		String followerName = sourceFollower != null ? sourceFollower.getName() : null;
-		if (followerName != null && target.contains(followerName))
+		if (target != null && followerName != null && target.contains(followerName))
 		{
 			return target.replace(followerName, domName);
 		}
 
-		return target;
+		return ColorUtil.wrapWithColorTag(domName, JagexColors.MENU_TARGET);
 	}
 
 	private static int getNpcActionIndex(MenuAction menuAction)
@@ -545,16 +569,57 @@ public class Racecar extends Plugin
 
 	private void clearTransmog()
 	{
-		if (transmogObject != null)
+		cleanupTrackedObjects();
+		resetState();
+	}
+
+	private void cleanupTrackedObjects()
+	{
+		List<RacecarObject> objects = new ArrayList<>(ACTIVE_OBJECTS);
+		if (transmogObject != null && !objects.contains(transmogObject))
 		{
-			if (client.isRuneLiteObjectRegistered(transmogObject))
-			{
-				client.removeRuneLiteObject(transmogObject);
-			}
-			transmogObject.clear();
+			objects.add(transmogObject);
 		}
 
-		resetState();
+		for (RacecarObject object : objects)
+		{
+			disposeRacecarObject(object);
+		}
+	}
+
+	private void disposeRacecarObject(RacecarObject object)
+	{
+		if (object == null)
+		{
+			return;
+		}
+
+		/*
+		 * Blank the controller first. Even if RuneLite fails to remove a stale
+		 * registration immediately, getModel() will return null from this point.
+		 */
+		object.clear();
+
+		try
+		{
+			if (client.isRuneLiteObjectRegistered(object))
+			{
+				client.removeRuneLiteObject(object);
+			}
+
+			if (!client.isRuneLiteObjectRegistered(object))
+			{
+				ACTIVE_OBJECTS.remove(object);
+			}
+			else
+			{
+				log.debug("Racecar controller remained registered after removal attempt");
+			}
+		}
+		catch (RuntimeException ex)
+		{
+			log.debug("Unable to remove Racecar controller cleanly", ex);
+		}
 	}
 
 	private void resetState()
@@ -580,6 +645,7 @@ public class Racecar extends Plugin
 
 		@Nullable
 		private AnimationController animationController;
+		private boolean active = true;
 		private int verticalOffset;
 		private int modelScalePercent = 100;
 
@@ -593,7 +659,10 @@ public class Racecar extends Plugin
 
 		private void setAnimation(Animation animation)
 		{
-			animationController = new AnimationController(client, animation);
+			if (active)
+			{
+				animationController = new AnimationController(client, animation);
+			}
 		}
 
 		private void setVerticalOffset(int verticalOffset)
@@ -608,13 +677,14 @@ public class Racecar extends Plugin
 
 		private void clear()
 		{
+			active = false;
 			animationController = null;
 		}
 
 		@Override
 		public void tick(int ticksSinceLastFrame)
 		{
-			if (animationController != null)
+			if (active && animationController != null)
 			{
 				animationController.tick(ticksSinceLastFrame);
 			}
@@ -623,7 +693,7 @@ public class Racecar extends Plugin
 		@Override
 		public Model getModel()
 		{
-			if (animationController == null)
+			if (!active || animationController == null)
 			{
 				return null;
 			}
