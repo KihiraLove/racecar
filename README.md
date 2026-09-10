@@ -25,11 +25,13 @@ Racecar now keeps the burrowed boss core model at native scale internally and ap
 
 This is important because RuneLite documents `Client.applyTransformations()` as returning a shared temporary model which becomes invalid after another transformation call. The transformed model is therefore never retained between frames. Each frame is animated at boss scale, then immediately reduced from the 5x5 boss footprint to pet scale before it is drawn.
 
-The scale also respects the NPC composition's width/height scale values rather than assuming a uniform 128/128 boss scale.
+The scale also respects the NPC composition's width/height scale values rather than assuming a uniform 128/128 boss scale. A configurable percentage multiplier is then applied on top of that calculated pet scale.
 
 ## Configuration
 
-`Vertical offset` raises or lowers the final pet-sized animated model relative to the follower tile. Positive values raise the model. The default is `64`, with a tuning range of `-512` to `512`.
+`Vertical offset` raises or lowers the final pet-sized animated model relative to the follower tile. Positive values raise the model. The current tuned default is `10`, with a range of `-512` to `512`.
+
+`Scale (%)` adjusts the final rendered size without changing follower positioning or animation behavior. `100` is the calculated pet scale. The tuning range is `50` to `150`; for a slightly larger model, `110` is a useful first comparison point.
 
 The temporary `Use Dom pet model` and `Burrow animations` compatibility switches have been removed. The Dom-model experiment proved incompatible, and the burrow animation is required to produce the intended car form.
 
