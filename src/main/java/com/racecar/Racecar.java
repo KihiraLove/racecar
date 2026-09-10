@@ -93,11 +93,12 @@ public class Racecar extends Plugin
 	protected void startUp()
 	{
 		log.debug("Racecar started");
-		cleanupTrackedObjects();
-		resetState();
-		running = true;
-		clientThread.invoke(this::loadProfile);
-		renderCallbackManager.register(renderCallback);
+		clientThread.invokeLater(() ->
+		{
+			running = true;
+			loadProfile();
+			renderCallbackManager.register(renderCallback);
+		});
 	}
 
 	@Override
@@ -105,14 +106,18 @@ public class Racecar extends Plugin
 	{
 		log.debug("Racecar stopped");
 		running = false;
-		try
+		clientThread.invokeLater(() ->
 		{
-			clearTransmog();
-		}
-		finally
-		{
-			renderCallbackManager.unregister(renderCallback);
-		}
+			running = false;
+			try
+			{
+				clearTransmog();
+			}
+			finally
+			{
+				renderCallbackManager.unregister(renderCallback);
+			}
+		});
 	}
 
 	@Subscribe
@@ -456,6 +461,7 @@ public class Racecar extends Plugin
 
 	private void cleanupTrackedObjects()
 	{
+		assert client.isClientThread();
 		List<RacecarObject> objects = new ArrayList<>(ACTIVE_OBJECTS);
 		if (transmogObject != null && !objects.contains(transmogObject))
 		{
@@ -472,16 +478,9 @@ public class Racecar extends Plugin
 			if (object != null)
 			{
 				object.clear();
-			}
-		}
-
-		clientThread.invoke(() ->
-		{
-			for (RacecarObject object : objects)
-			{
 				disposeRacecarObject(object);
 			}
-		});
+		}
 	}
 
 	private void disposeRacecarObject(RacecarObject object)
