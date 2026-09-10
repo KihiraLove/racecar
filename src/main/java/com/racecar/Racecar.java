@@ -1,5 +1,6 @@
 package com.racecar;
 
+import com.google.inject.Provides;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -14,7 +15,6 @@ import net.runelite.api.Model;
 import net.runelite.api.ModelData;
 import net.runelite.api.NPC;
 import net.runelite.api.NPCComposition;
-import net.runelite.api.Perspective;
 import net.runelite.api.Renderable;
 import net.runelite.api.RuneLiteObject;
 import net.runelite.api.WorldView;
@@ -23,6 +23,7 @@ import net.runelite.api.events.MenuOpened;
 import net.runelite.api.gameval.AnimationID;
 import net.runelite.api.gameval.NpcID;
 import net.runelite.client.callback.Hooks;
+import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
@@ -49,19 +50,14 @@ public class Racecar extends Plugin
 	private static final int PET_RENDER_RADIUS = 60;
 	private static final int MODEL_SCALE_BASE = 128;
 
-	/*
-	 * RuneLite world-height units. Positive values here lift the replacement
-	 * model upward because scene Z decreases as rendered height increases.
-	 * The burrowed boss animations place the model below the terrain when used
-	 * as a normal follower, so compensate after anchoring to the follower tile.
-	 */
-	private static final int BURROWED_VERTICAL_OFFSET = 64;
-
 	@Inject
 	private Client client;
 
 	@Inject
 	private Hooks hooks;
+
+	@Inject
+	private RacecarConfig config;
 
 	private final Hooks.RenderableDrawListener drawListener = this::shouldDraw;
 	private final List<RuneLiteObject> transmogObjects = new ArrayList<>();
@@ -69,6 +65,12 @@ public class Racecar extends Plugin
 	private boolean transmogInitialized;
 	private NPC sourceFollower;
 	private MovementState movementState;
+
+	@Provides
+	RacecarConfig provideConfig(ConfigManager configManager)
+	{
+		return configManager.getConfig(RacecarConfig.class);
+	}
 
 	@Override
 	protected void startUp()
@@ -226,7 +228,6 @@ public class Racecar extends Plugin
 		transmogObject.setModel(model);
 		transmogObject.setRadius(PET_RENDER_RADIUS);
 		transmogObject.setLocation(follower.getLocalLocation(), worldView.getPlane());
-		setTransmogHeight(transmogObject, follower, worldView);
 		transmogObject.setOrientation(follower.getCurrentOrientation());
 		transmogObject.setActive(true);
 
@@ -250,8 +251,12 @@ public class Racecar extends Plugin
 				continue;
 			}
 
+			/*
+			 * Keep the replacement on the real follower's local point. Vertical
+			 * tuning is applied to the model vertices instead of the object's scene
+			 * Z so it cannot alter which tile the transmog is registered on.
+			 */
 			transmogObject.setLocation(follower.getLocalLocation(), worldView.getPlane());
-			setTransmogHeight(transmogObject, follower, worldView);
 			transmogObject.setOrientation(follower.getCurrentOrientation());
 			transmogObject.setRadius(PET_RENDER_RADIUS);
 
@@ -265,12 +270,6 @@ public class Racecar extends Plugin
 				transmogObject.setModel(model);
 			}
 		}
-	}
-
-	private void setTransmogHeight(RuneLiteObject transmogObject, NPC follower, WorldView worldView)
-	{
-		int terrainHeight = Perspective.getTileHeight(client, follower.getLocalLocation(), worldView.getPlane());
-		transmogObject.setZ(terrainHeight - BURROWED_VERTICAL_OFFSET);
 	}
 
 	private void updateFollowerMovement(NPC follower)
@@ -348,17 +347,33 @@ public class Racecar extends Plugin
 			return null;
 		}
 
-		/*
-		 * The burrowed boss is a 5x5 NPC. Scale its model by the inverse of
-		 * its configured footprint so the transmog occupies the visual scale
-		 * of a normal 1x1 follower while retaining the original proportions.
-		 */
 		int footprintSize = Math.max(1, composition.getSize());
-		if (footprintSize > 1)
+		int verticalOffset = config.burrowedVerticalOffset();
+
+		if (footprintSize > 1 || verticalOffset != 0)
 		{
-			int petScale = Math.max(1, Math.round((float) MODEL_SCALE_BASE / footprintSize));
 			mergedModelData = mergedModelData.cloneVertices();
-			mergedModelData.scale(petScale, petScale, petScale);
+
+			/*
+			 * The burrowed boss is a 5x5 NPC. Scale its model by the inverse of
+			 * its configured footprint so the transmog occupies the visual scale
+			 * of a normal 1x1 follower while retaining the original proportions.
+			 */
+			if (footprintSize > 1)
+			{
+				int petScale = Math.max(1, Math.round((float) MODEL_SCALE_BASE / footprintSize));
+				mergedModelData.scale(petScale, petScale, petScale);
+			}
+
+			/*
+			 * Model-space Y is vertical. Positive config values lift the model, so
+			 * translate by the negative value. Applying this after scaling makes the
+			 * configured number correspond to the final pet-sized model.
+			 */
+			if (verticalOffset != 0)
+			{
+				mergedModelData.translate(0, -verticalOffset, 0);
+			}
 		}
 
 		return mergedModelData.light();
