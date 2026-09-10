@@ -7,7 +7,7 @@ import java.util.List;
 import java.util.Objects;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
-import net.runelite.api.Animation;
+import net.runelite.api.AnimationController;
 import net.runelite.api.Client;
 import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
@@ -65,6 +65,8 @@ public class Racecar extends Plugin
 	private boolean transmogInitialized;
 	private NPC sourceFollower;
 	private MovementState movementState;
+	private Model baseBurrowedModel;
+	private AnimationController animationController;
 
 	@Provides
 	RacecarConfig provideConfig(ConfigManager configManager)
@@ -119,8 +121,9 @@ public class Racecar extends Plugin
 			transmogInitialized = true;
 		}
 
-		updateTransmogObject(follower);
 		updateFollowerMovement(follower);
+		tickAnimation();
+		updateTransmogObject(follower);
 	}
 
 	@Subscribe
@@ -172,10 +175,6 @@ public class Racecar extends Plugin
 
 			if (domAction == null)
 			{
-				/*
-				 * Do not expose source-pet-specific options that Dom does not have.
-				 * Yami is only a temporary stand-in for testing the transmog.
-				 */
 				menuEntries.remove(i);
 				changed = true;
 				continue;
@@ -209,11 +208,20 @@ public class Racecar extends Plugin
 
 	private RuneLiteObject initializeTransmogObject(NPC follower)
 	{
-		Model model = createBurrowedDoomModel();
-		if (model == null)
+		baseBurrowedModel = createBurrowedDoomBaseModel();
+		if (baseBurrowedModel == null)
 		{
 			log.debug("Unable to create burrowed Doom model for follower {} ({})",
 				follower.getName(), follower.getId());
+			return null;
+		}
+
+		movementState = null;
+		updateFollowerMovement(follower);
+
+		Model renderedModel = createRenderedBurrowedModel();
+		if (renderedModel == null)
+		{
 			return null;
 		}
 
@@ -225,14 +233,13 @@ public class Racecar extends Plugin
 		}
 
 		WorldView worldView = client.getTopLevelWorldView();
-		transmogObject.setModel(model);
+		transmogObject.setModel(renderedModel);
 		transmogObject.setRadius(PET_RENDER_RADIUS);
 		transmogObject.setLocation(follower.getLocalLocation(), worldView.getPlane());
 		transmogObject.setOrientation(follower.getCurrentOrientation());
 		transmogObject.setActive(true);
 
 		transmogObjects.add(transmogObject);
-		movementState = null;
 
 		log.debug("Racecar transmog initialized for follower {} ({}) using target NPC {}",
 			follower.getName(), follower.getId(), TARGET_NPC_ID);
@@ -242,7 +249,7 @@ public class Racecar extends Plugin
 	private void updateTransmogObject(NPC follower)
 	{
 		WorldView worldView = client.getTopLevelWorldView();
-		Model model = createBurrowedDoomModel();
+		Model renderedModel = createRenderedBurrowedModel();
 
 		for (RuneLiteObject transmogObject : transmogObjects)
 		{
@@ -251,23 +258,13 @@ public class Racecar extends Plugin
 				continue;
 			}
 
-			/*
-			 * Keep the replacement on the real follower's local point. Vertical
-			 * tuning is applied to the model vertices instead of the object's scene
-			 * Z so it cannot alter which tile the transmog is registered on.
-			 */
 			transmogObject.setLocation(follower.getLocalLocation(), worldView.getPlane());
 			transmogObject.setOrientation(follower.getCurrentOrientation());
 			transmogObject.setRadius(PET_RENDER_RADIUS);
 
-			/*
-			 * The established pet-to-npc-transmog plugin reapplies the model while
-			 * updating the follower. Keep the same behaviour here for the test
-			 * implementation rather than relying on a one-time model assignment.
-			 */
-			if (model != null)
+			if (renderedModel != null)
 			{
-				transmogObject.setModel(model);
+				transmogObject.setModel(renderedModel);
 			}
 		}
 	}
@@ -278,7 +275,7 @@ public class Racecar extends Plugin
 			? MovementState.MOVING
 			: MovementState.STANDING;
 
-		if (newState == movementState)
+		if (newState == movementState && animationController != null)
 		{
 			return;
 		}
@@ -288,37 +285,18 @@ public class Racecar extends Plugin
 			? MOVEMENT_ANIMATION_ID
 			: IDLE_ANIMATION_ID;
 
-		applyAnimation(animationId);
+		animationController = new AnimationController(client, animationId);
 	}
 
-	@SuppressWarnings("deprecation")
-	private void applyAnimation(int animationId)
+	private void tickAnimation()
 	{
-		Animation animation = client.loadAnimation(animationId);
-		if (animation == null)
+		if (animationController != null)
 		{
-			log.debug("Unable to load Racecar animation {}", animationId);
-			return;
-		}
-
-		for (RuneLiteObject transmogObject : transmogObjects)
-		{
-			if (transmogObject == null)
-			{
-				continue;
-			}
-
-			/*
-			 * Match pet-to-npc-transmog's working animation path: activate the
-			 * RuneLiteObject, assign the loaded animation, and explicitly loop it.
-			 */
-			transmogObject.setActive(true);
-			transmogObject.setAnimation(animation);
-			transmogObject.setShouldLoop(true);
+			animationController.tick(1);
 		}
 	}
 
-	private Model createBurrowedDoomModel()
+	private Model createBurrowedDoomBaseModel()
 	{
 		NPCComposition composition = client.getNpcDefinition(TARGET_NPC_ID);
 		if (composition == null)
@@ -342,41 +320,44 @@ public class Racecar extends Plugin
 		}
 
 		ModelData mergedModelData = client.mergeModels(modelDataArray);
-		if (mergedModelData == null)
+		return mergedModelData == null ? null : mergedModelData.light();
+	}
+
+	private Model createRenderedBurrowedModel()
+	{
+		if (baseBurrowedModel == null || animationController == null)
 		{
 			return null;
 		}
 
-		int footprintSize = Math.max(1, composition.getSize());
-		int verticalOffset = config.burrowedVerticalOffset();
-
-		if (footprintSize > 1 || verticalOffset != 0)
+		/*
+		 * Animate the boss at its native scale first. RuneLite's transformation
+		 * API clones the model vertices, so the animated result can then safely be
+		 * scaled. This is important for Doom because its burrow animations contain
+		 * model-space translation: scaling the base mesh before animation left those
+		 * translations at boss scale and displaced the visible model by several tiles.
+		 */
+		Model renderedModel = animationController.animate(baseBurrowedModel);
+		if (renderedModel == null)
 		{
-			mergedModelData = mergedModelData.cloneVertices();
-
-			/*
-			 * The burrowed boss is a 5x5 NPC. Scale its model by the inverse of
-			 * its configured footprint so the transmog occupies the visual scale
-			 * of a normal 1x1 follower while retaining the original proportions.
-			 */
-			if (footprintSize > 1)
-			{
-				int petScale = Math.max(1, Math.round((float) MODEL_SCALE_BASE / footprintSize));
-				mergedModelData.scale(petScale, petScale, petScale);
-			}
-
-			/*
-			 * Model-space Y is vertical. Positive config values lift the model, so
-			 * translate by the negative value. Applying this after scaling makes the
-			 * configured number correspond to the final pet-sized model.
-			 */
-			if (verticalOffset != 0)
-			{
-				mergedModelData.translate(0, -verticalOffset, 0);
-			}
+			return null;
 		}
 
-		return mergedModelData.light();
+		NPCComposition composition = client.getNpcDefinition(TARGET_NPC_ID);
+		int footprintSize = composition == null ? 1 : Math.max(1, composition.getSize());
+		if (footprintSize > 1)
+		{
+			int petScale = Math.max(1, Math.round((float) MODEL_SCALE_BASE / footprintSize));
+			renderedModel.scale(petScale, petScale, petScale);
+		}
+
+		int verticalOffset = config.burrowedVerticalOffset();
+		if (verticalOffset != 0)
+		{
+			renderedModel.translate(0, -verticalOffset, 0);
+		}
+
+		return renderedModel;
 	}
 
 	private String replaceFollowerName(String target, String domName)
@@ -447,6 +428,8 @@ public class Racecar extends Plugin
 		transmogInitialized = false;
 		sourceFollower = null;
 		movementState = null;
+		baseBurrowedModel = null;
+		animationController = null;
 	}
 
 	private enum MovementState
