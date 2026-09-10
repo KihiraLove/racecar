@@ -5,11 +5,10 @@ import java.awt.Polygon;
 import java.awt.Shape;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
-import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import javax.annotation.Nullable;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
@@ -33,6 +32,7 @@ import net.runelite.api.events.MenuEntryAdded;
 import net.runelite.api.events.MenuOpened;
 import net.runelite.api.gameval.AnimationID;
 import net.runelite.api.gameval.NpcID;
+import net.runelite.client.callback.ClientThread;
 import net.runelite.client.callback.Hooks;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
@@ -64,15 +64,17 @@ public class Racecar extends Plugin
 	private static final int SYNTHETIC_MENU_IDENTIFIER = 0x52414345; // "RACE"
 
 	/*
-	 * Keep every controller created by this classloader until it is confirmed
-	 * removed. This lets a later disable/re-enable clean up an older controller
-	 * even if the plugin's current transmogObject reference was replaced.
+	 * Controllers can outlive the currently referenced transmog object until the
+	 * client thread removes them. A concurrent set lets startup/shutdown snapshot
+	 * them safely even though those methods may run on the Swing event thread.
 	 */
-	private static final Set<RacecarObject> ACTIVE_OBJECTS =
-		Collections.newSetFromMap(new IdentityHashMap<RacecarObject, Boolean>());
+	private static final Set<RacecarObject> ACTIVE_OBJECTS = ConcurrentHashMap.newKeySet();
 
 	@Inject
 	private Client client;
+
+	@Inject
+	private ClientThread clientThread;
 
 	@Inject
 	private Hooks hooks;
@@ -581,10 +583,24 @@ public class Racecar extends Plugin
 			objects.add(transmogObject);
 		}
 
-		for (RacecarObject object : objects)
+		if (objects.isEmpty())
 		{
-			disposeRacecarObject(object);
+			return;
 		}
+
+		/*
+		 * startUp()/shutDown() may be called from Swing's AWT event thread. The
+		 * RuneLite object registry is client-thread-only, so dispatch cleanup via
+		 * ClientThread. ClientThread.invoke() executes immediately when this method
+		 * is reached from ClientTick and queues it otherwise.
+		 */
+		clientThread.invoke(() ->
+		{
+			for (RacecarObject object : objects)
+			{
+				disposeRacecarObject(object);
+			}
+		});
 	}
 
 	private void disposeRacecarObject(RacecarObject object)
@@ -594,10 +610,7 @@ public class Racecar extends Plugin
 			return;
 		}
 
-		/*
-		 * Blank the controller first. Even if RuneLite fails to remove a stale
-		 * registration immediately, getModel() will return null from this point.
-		 */
+		/* This method is only called on the client thread. */
 		object.clear();
 
 		try
