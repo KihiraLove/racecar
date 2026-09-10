@@ -11,15 +11,14 @@ The implementation is based on the known-working code in the `pet-to-npc-transmo
 - uses the real `client.getFollower()` NPC for all server-driven following/pathing;
 - hides that follower through RuneLite's render listener;
 - creates a client-side `RuneLiteObject` replacement;
-- keeps the replacement registered on the follower's exact local point and orientation every client tick;
+- keeps the replacement on the follower's real local tile and orientation every client tick;
 - builds the replacement from the model parts of `NpcID.DOM_BOSS_BURROWED`;
-- animates Doom at its native scale first, then scales the complete animated frame from its native 5x5 footprint to a 1x1 pet-sized visual;
-- applies the configurable vertical correction after animation and scaling;
+- scales the burrowed Doom from its native 5x5 footprint to a 1x1 pet-sized visual;
+- applies the vertical correction in model space so height tuning cannot move the replacement to another tile;
 - uses `AnimationID.DOM_BURROW_IDLE` while stationary;
 - uses `AnimationID.DOM_BURROWED_MOVEMENT` while moving;
+- follows the same `setAnimation` and looping path used by `pet-to-npc-transmog`;
 - rewrites the hidden follower's right-click menu to use the actions and name from `NpcID.DOM_PET`.
-
-Animating before scaling is important for the burrowed Doom animations because animation transforms can contain model-space translation. Scaling the base mesh first leaves those translations at boss scale and can make the visible model appear several tiles away from the follower even though the `RuneLiteObject` itself is on the correct tile.
 
 Because the right-click menu remains attached to the real hidden follower, the simulated Dom entries still act on the actual follower during testing.
 
