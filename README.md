@@ -6,7 +6,7 @@ Racecar is a RuneLite pet transmog plugin intended to replace **Dom** with the b
 
 The current build is deliberately in test mode. It only transmogs a follower whose in-game name is **Yami**, so other pets can be taken out without Racecar affecting them.
 
-The real follower remains responsible for server-driven following/pathing and is hidden through RuneLite's render listener. Racecar registers a client-side replacement on the follower's exact local point and orientation and rewrites the hidden follower's right-click menu to use Dom's name/actions.
+The real follower remains responsible for server-driven following/pathing and is hidden through RuneLite's render listener. Racecar registers a client-side replacement on the follower's exact local point and orientation.
 
 ## Doom model findings
 
@@ -21,17 +21,29 @@ The incomplete-looking standing Doom seen with animations disabled was expected 
 
 ## Rendering approach
 
-Racecar now keeps the burrowed boss core model at native scale internally and applies `AnimationID.DOM_BURROW_IDLE` or `AnimationID.DOM_BURROWED_MOVEMENT` at render time.
+Racecar keeps the burrowed boss core model at native scale internally and applies `AnimationID.DOM_BURROW_IDLE` or `AnimationID.DOM_BURROWED_MOVEMENT` at render time.
 
 This is important because RuneLite documents `Client.applyTransformations()` as returning a shared temporary model which becomes invalid after another transformation call. The transformed model is therefore never retained between frames. Each frame is animated at boss scale, then immediately reduced from the 5x5 boss footprint to pet scale before it is drawn.
 
 The scale also respects the NPC composition's width/height scale values rather than assuming a uniform 128/128 boss scale. A configurable percentage multiplier is then applied on top of that calculated pet scale.
 
+## Interaction menu
+
+`RuneLiteObjectController` does not expose a native NPC clickbox or interaction API, so the rendered burrowed Doom cannot itself participate in the game's NPC menu system.
+
+Racecar instead uses the hidden server-backed follower as the interaction target:
+
+- if RuneLite still generates native menu entries for the hidden follower, Racecar rewrites them to Dom's name and action slots;
+- if hiding the follower also removes those native entries, hovering the hidden follower's convex hull or tile injects a simulated Dom menu;
+- the simulated `Talk-to`, `Pick-up`, and `Examine` entries forward the corresponding NPC action to the real follower by NPC index.
+
+During Yami test mode those actions still operate on Yami server-side. In final Dom mode they operate on the actual Dom pet.
+
 ## Configuration
 
-`Vertical offset` raises or lowers the final pet-sized animated model relative to the follower tile. Positive values raise the model. The current tuned default is `10`, with a range of `-512` to `512`.
+`Vertical offset` raises or lowers the final pet-sized animated model relative to the follower tile. Positive values raise the model. The current tuned default is `15`, with a range of `-512` to `512`.
 
-`Scale (%)` adjusts the final rendered size without changing follower positioning or animation behavior. `100` is the calculated pet scale. The tuning range is `50` to `150`; for a slightly larger model, `110` is a useful first comparison point.
+`Scale (%)` adjusts the final rendered size without changing follower positioning or animation behavior. The tuned default is `150`. The tuning range is `50` to `200` so the final value can still be adjusted if necessary.
 
 The temporary `Use Dom pet model` and `Burrow animations` compatibility switches have been removed. The Dom-model experiment proved incompatible, and the burrow animation is required to produce the intended car form.
 
