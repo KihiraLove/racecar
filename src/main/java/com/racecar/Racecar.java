@@ -14,6 +14,7 @@ import net.runelite.api.Model;
 import net.runelite.api.ModelData;
 import net.runelite.api.NPC;
 import net.runelite.api.NPCComposition;
+import net.runelite.api.Perspective;
 import net.runelite.api.Renderable;
 import net.runelite.api.RuneLiteObject;
 import net.runelite.api.WorldView;
@@ -35,11 +36,11 @@ import net.runelite.client.plugins.PluginDescriptor;
 public class Racecar extends Plugin
 {
 	/*
-	 * Test mode intentionally transmogs whichever follower the local player has
-	 * out. This avoids depending on the newly-added puppy NPC IDs/names while
-	 * testing with the Pug. Set to false for the final Dom-only version.
+	 * Test mode uses Yami as the stand-in follower. Set to false once the plugin
+	 * is ready to target the real Dom pet variants only.
 	 */
 	private static final boolean TEST_MODE = true;
+	private static final String TEST_FOLLOWER_NAME = "Yami";
 
 	private static final int TARGET_NPC_ID = NpcID.DOM_BOSS_BURROWED;
 	private static final int MENU_NPC_ID = NpcID.DOM_PET;
@@ -47,6 +48,14 @@ public class Racecar extends Plugin
 	private static final int MOVEMENT_ANIMATION_ID = AnimationID.DOM_BURROWED_MOVEMENT;
 	private static final int PET_RENDER_RADIUS = 60;
 	private static final int MODEL_SCALE_BASE = 128;
+
+	/*
+	 * RuneLite world-height units. Positive values here lift the replacement
+	 * model upward because scene Z decreases as rendered height increases.
+	 * The burrowed boss animations place the model below the terrain when used
+	 * as a normal follower, so compensate after anchoring to the follower tile.
+	 */
+	private static final int BURROWED_VERTICAL_OFFSET = 64;
 
 	@Inject
 	private Client client;
@@ -163,8 +172,7 @@ public class Racecar extends Plugin
 			{
 				/*
 				 * Do not expose source-pet-specific options that Dom does not have.
-				 * In test mode the Pug already has the same Talk-to/Pick-up slots,
-				 * so this primarily protects other temporary follower choices.
+				 * Yami is only a temporary stand-in for testing the transmog.
 				 */
 				menuEntries.remove(i);
 				changed = true;
@@ -191,7 +199,7 @@ public class Racecar extends Plugin
 
 		if (TEST_MODE)
 		{
-			return true;
+			return TEST_FOLLOWER_NAME.equalsIgnoreCase(follower.getName());
 		}
 
 		return follower.getId() == NpcID.DOM_PET || follower.getId() == NpcID.POH_DOM_PET;
@@ -218,6 +226,7 @@ public class Racecar extends Plugin
 		transmogObject.setModel(model);
 		transmogObject.setRadius(PET_RENDER_RADIUS);
 		transmogObject.setLocation(follower.getLocalLocation(), worldView.getPlane());
+		setTransmogHeight(transmogObject, follower, worldView);
 		transmogObject.setOrientation(follower.getCurrentOrientation());
 		transmogObject.setActive(true);
 
@@ -242,6 +251,7 @@ public class Racecar extends Plugin
 			}
 
 			transmogObject.setLocation(follower.getLocalLocation(), worldView.getPlane());
+			setTransmogHeight(transmogObject, follower, worldView);
 			transmogObject.setOrientation(follower.getCurrentOrientation());
 			transmogObject.setRadius(PET_RENDER_RADIUS);
 
@@ -255,6 +265,12 @@ public class Racecar extends Plugin
 				transmogObject.setModel(model);
 			}
 		}
+	}
+
+	private void setTransmogHeight(RuneLiteObject transmogObject, NPC follower, WorldView worldView)
+	{
+		int terrainHeight = Perspective.getTileHeight(client, follower.getLocalLocation(), worldView.getPlane());
+		transmogObject.setZ(terrainHeight - BURROWED_VERTICAL_OFFSET);
 	}
 
 	private void updateFollowerMovement(NPC follower)
