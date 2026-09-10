@@ -1,8 +1,6 @@
 package com.racecar;
 
 import com.google.inject.Provides;
-import java.awt.Polygon;
-import java.awt.Shape;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -15,21 +13,15 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Animation;
 import net.runelite.api.AnimationController;
 import net.runelite.api.Client;
-import net.runelite.api.MenuAction;
-import net.runelite.api.MenuEntry;
 import net.runelite.api.Model;
 import net.runelite.api.ModelData;
 import net.runelite.api.NPC;
 import net.runelite.api.NPCComposition;
 import net.runelite.api.Perspective;
-import net.runelite.api.Point;
 import net.runelite.api.Renderable;
 import net.runelite.api.RuneLiteObjectController;
 import net.runelite.api.WorldView;
-import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.events.ClientTick;
-import net.runelite.api.events.MenuEntryAdded;
-import net.runelite.api.events.MenuOpened;
 import net.runelite.api.gameval.AnimationID;
 import net.runelite.api.gameval.NpcID;
 import net.runelite.client.callback.ClientThread;
@@ -38,8 +30,6 @@ import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
-import net.runelite.client.ui.JagexColors;
-import net.runelite.client.util.ColorUtil;
 
 @Slf4j
 @PluginDescriptor(
@@ -57,11 +47,9 @@ public class Racecar extends Plugin
 	private static final String TEST_FOLLOWER_NAME = "Yami";
 
 	private static final int TARGET_NPC_ID = NpcID.DOM_BOSS_BURROWED;
-	private static final int MENU_NPC_ID = NpcID.DOM_PET;
 	private static final int IDLE_ANIMATION_ID = AnimationID.DOM_BURROW_IDLE;
 	private static final int MOVEMENT_ANIMATION_ID = AnimationID.DOM_BURROWED_MOVEMENT;
 	private static final int PET_RENDER_RADIUS = 60;
-	private static final int SYNTHETIC_MENU_IDENTIFIER = 0x52414345; // "RACE"
 
 	/*
 	 * Controllers can outlive the currently referenced transmog object until the
@@ -149,205 +137,6 @@ public class Racecar extends Plugin
 
 		updateTransmogObject(follower);
 		updateFollowerMovement(follower);
-	}
-
-	/**
-	 * RuneLiteObjectController has no native interaction/clickbox API. If hiding
-	 * the real follower also prevents RuneLite from generating NPC menu entries,
-	 * add an equivalent Dom menu while the mouse is over the hidden follower's
-	 * model hull or tile. The menu callbacks dispatch the real NPC operation to
-	 * the server-backed follower.
-	 */
-	@Subscribe
-	public void onMenuEntryAdded(MenuEntryAdded event)
-	{
-		if (!transmogInitialized || sourceFollower == null
-			|| event.getMenuEntry().getType() != MenuAction.WALK
-			|| !isMouseOverFollowerInteractionArea()
-			|| hasSyntheticDomMenuEntry())
-		{
-			return;
-		}
-
-		addSyntheticDomMenuEntries();
-	}
-
-	@Subscribe
-	public void onMenuOpened(MenuOpened event)
-	{
-		if (!transmogInitialized || sourceFollower == null)
-		{
-			return;
-		}
-
-		NPCComposition domComposition = client.getNpcDefinition(MENU_NPC_ID);
-		if (domComposition == null)
-		{
-			return;
-		}
-
-		String[] domActions = domComposition.getActions();
-		List<MenuEntry> menuEntries = new ArrayList<>(Arrays.asList(event.getMenuEntries()));
-		boolean hasNativeFollowerEntries = menuEntries.stream()
-			.anyMatch(menuEntry -> menuEntry.getNpc() == sourceFollower);
-
-		/*
-		 * Prefer native NPC entries when the hidden follower remains pickable.
-		 * They already contain the exact server action parameters, so remove the
-		 * synthetic fallback and only rewrite their visible Dom labels/actions.
-		 */
-		if (hasNativeFollowerEntries)
-		{
-			menuEntries.removeIf(this::isSyntheticDomMenuEntry);
-		}
-
-		boolean changed = hasNativeFollowerEntries;
-		for (int i = menuEntries.size() - 1; i >= 0; i--)
-		{
-			MenuEntry menuEntry = menuEntries.get(i);
-			if (menuEntry.getNpc() != sourceFollower)
-			{
-				continue;
-			}
-
-			String domTarget = replaceFollowerName(menuEntry.getTarget(), domComposition.getName());
-			MenuAction menuAction = menuEntry.getType();
-
-			if (menuAction == MenuAction.EXAMINE_NPC)
-			{
-				menuEntry.setOption("Examine");
-				menuEntry.setTarget(domTarget);
-				continue;
-			}
-
-			int actionIndex = getNpcActionIndex(menuAction);
-			if (actionIndex < 0)
-			{
-				continue;
-			}
-
-			String domAction = domActions != null && actionIndex < domActions.length
-				? domActions[actionIndex]
-				: null;
-
-			if (domAction == null)
-			{
-				menuEntries.remove(i);
-				continue;
-			}
-
-			menuEntry.setOption(domAction);
-			menuEntry.setTarget(domTarget);
-		}
-
-		if (changed)
-		{
-			client.getMenu().setMenuEntries(menuEntries.toArray(new MenuEntry[0]));
-		}
-	}
-
-	private void addSyntheticDomMenuEntries()
-	{
-		NPCComposition domComposition = client.getNpcDefinition(MENU_NPC_ID);
-		if (domComposition == null)
-		{
-			return;
-		}
-
-		String domName = domComposition.getName();
-		String domTarget = ColorUtil.wrapWithColorTag(domName, JagexColors.MENU_TARGET);
-		String[] domActions = domComposition.getActions();
-
-		/*
-		 * Append Examine first, then NPC operations in reverse order so the first
-		 * NPC operation (Talk-to for Dom) is the final/top entry, matching normal
-		 * NPC left-click/right-click ordering.
-		 */
-		createSyntheticDomMenuEntry("Examine", domTarget, domName, MenuAction.EXAMINE_NPC);
-
-		if (domActions == null)
-		{
-			return;
-		}
-
-		for (int actionIndex = Math.min(4, domActions.length - 1); actionIndex >= 0; actionIndex--)
-		{
-			String option = domActions[actionIndex];
-			if (option == null)
-			{
-				continue;
-			}
-
-			MenuAction action = getNpcMenuAction(actionIndex);
-			if (action != null)
-			{
-				createSyntheticDomMenuEntry(option, domTarget, domName, action);
-			}
-		}
-	}
-
-	private void createSyntheticDomMenuEntry(
-		String option, String displayTarget, String actionTarget, MenuAction followerAction)
-	{
-		client.getMenu().createMenuEntry(-1)
-			.setOption(option)
-			.setTarget(displayTarget)
-			.setIdentifier(SYNTHETIC_MENU_IDENTIFIER)
-			.setType(MenuAction.RUNELITE)
-			.onClick(menuEntry -> invokeFollowerAction(followerAction, option, actionTarget));
-	}
-
-	private void invokeFollowerAction(MenuAction action, String option, String target)
-	{
-		NPC follower = sourceFollower;
-		if (follower == null)
-		{
-			return;
-		}
-
-		LocalPoint location = follower.getLocalLocation();
-		client.menuAction(
-			location.getSceneX(),
-			location.getSceneY(),
-			action,
-			follower.getIndex(),
-			-1,
-			option,
-			target);
-	}
-
-	private boolean isMouseOverFollowerInteractionArea()
-	{
-		if (sourceFollower == null)
-		{
-			return false;
-		}
-
-		Point mouse = client.getMouseCanvasPosition();
-		if (mouse == null)
-		{
-			return false;
-		}
-
-		Shape followerHull = sourceFollower.getConvexHull();
-		if (followerHull != null && followerHull.contains(mouse.getX(), mouse.getY()))
-		{
-			return true;
-		}
-
-		Polygon tilePoly = sourceFollower.getCanvasTilePoly();
-		return tilePoly != null && tilePoly.contains(mouse.getX(), mouse.getY());
-	}
-
-	private boolean hasSyntheticDomMenuEntry()
-	{
-		return Arrays.stream(client.getMenu().getMenuEntries()).anyMatch(this::isSyntheticDomMenuEntry);
-	}
-
-	private boolean isSyntheticDomMenuEntry(MenuEntry menuEntry)
-	{
-		return menuEntry.getType() == MenuAction.RUNELITE
-			&& menuEntry.getIdentifier() == SYNTHETIC_MENU_IDENTIFIER;
 	}
 
 	private boolean isSourceFollower(NPC follower)
@@ -500,61 +289,6 @@ public class Racecar extends Plugin
 		return mergedModelData == null ? null : mergedModelData.light();
 	}
 
-	private String replaceFollowerName(String target, String domName)
-	{
-		if (domName == null)
-		{
-			return target;
-		}
-
-		String followerName = sourceFollower != null ? sourceFollower.getName() : null;
-		if (target != null && followerName != null && target.contains(followerName))
-		{
-			return target.replace(followerName, domName);
-		}
-
-		return ColorUtil.wrapWithColorTag(domName, JagexColors.MENU_TARGET);
-	}
-
-	private static int getNpcActionIndex(MenuAction menuAction)
-	{
-		switch (menuAction)
-		{
-			case NPC_FIRST_OPTION:
-				return 0;
-			case NPC_SECOND_OPTION:
-				return 1;
-			case NPC_THIRD_OPTION:
-				return 2;
-			case NPC_FOURTH_OPTION:
-				return 3;
-			case NPC_FIFTH_OPTION:
-				return 4;
-			default:
-				return -1;
-		}
-	}
-
-	@Nullable
-	private static MenuAction getNpcMenuAction(int actionIndex)
-	{
-		switch (actionIndex)
-		{
-			case 0:
-				return MenuAction.NPC_FIRST_OPTION;
-			case 1:
-				return MenuAction.NPC_SECOND_OPTION;
-			case 2:
-				return MenuAction.NPC_THIRD_OPTION;
-			case 3:
-				return MenuAction.NPC_FOURTH_OPTION;
-			case 4:
-				return MenuAction.NPC_FIFTH_OPTION;
-			default:
-				return null;
-		}
-	}
-
 	private boolean shouldDraw(Renderable renderable, boolean drawingUi)
 	{
 		if (renderable instanceof NPC && transmogInitialized)
@@ -589,10 +323,21 @@ public class Racecar extends Plugin
 		}
 
 		/*
-		 * startUp()/shutDown() may be called from Swing's AWT event thread. The
-		 * RuneLite object registry is client-thread-only, so dispatch cleanup via
-		 * ClientThread. ClientThread.invoke() executes immediately when this method
-		 * is reached from ClientTick and queues it otherwise.
+		 * Blanking only changes Racecar-owned state, so it is safe to do
+		 * immediately even when startup/shutdown is running on Swing's AWT thread.
+		 * This makes the model disappear before the client-thread registry removal.
+		 */
+		for (RacecarObject object : objects)
+		{
+			if (object != null)
+			{
+				object.clear();
+			}
+		}
+
+		/*
+		 * The RuneLite object registry is client-thread-only. ClientThread.invoke()
+		 * executes immediately when reached from ClientTick and queues otherwise.
 		 */
 		clientThread.invoke(() ->
 		{
@@ -609,9 +354,6 @@ public class Racecar extends Plugin
 		{
 			return;
 		}
-
-		/* This method is only called on the client thread. */
-		object.clear();
 
 		try
 		{
@@ -658,7 +400,7 @@ public class Racecar extends Plugin
 
 		@Nullable
 		private AnimationController animationController;
-		private boolean active = true;
+		private volatile boolean active = true;
 		private int verticalOffset;
 		private int modelScalePercent = 100;
 
@@ -690,8 +432,8 @@ public class Racecar extends Plugin
 
 		private void clear()
 		{
-			active = false;
 			animationController = null;
+			active = false;
 		}
 
 		@Override
