@@ -63,6 +63,7 @@ public class Racecar extends Plugin
 	private final List<RuneLiteObject> transmogObjects = new ArrayList<>();
 
 	private boolean transmogInitialized;
+	private boolean animationsApplied;
 	private NPC sourceFollower;
 	private MovementState movementState;
 
@@ -120,7 +121,7 @@ public class Racecar extends Plugin
 		}
 
 		updateTransmogObject(follower);
-		updateFollowerMovement(follower);
+		updateAnimationState(follower);
 	}
 
 	@Subscribe
@@ -229,6 +230,7 @@ public class Racecar extends Plugin
 
 		transmogObjects.add(transmogObject);
 		movementState = null;
+		animationsApplied = false;
 
 		log.debug("Racecar transmog initialized for follower {} ({}) using target NPC {}",
 			follower.getName(), follower.getId(), TARGET_NPC_ID);
@@ -256,6 +258,30 @@ public class Racecar extends Plugin
 				transmogObject.setModel(model);
 			}
 		}
+	}
+
+	private void updateAnimationState(NPC follower)
+	{
+		if (!config.enableBurrowAnimations())
+		{
+			if (animationsApplied)
+			{
+				for (RuneLiteObject transmogObject : transmogObjects)
+				{
+					if (transmogObject != null)
+					{
+						transmogObject.setAnimation(null);
+					}
+				}
+			}
+
+			animationsApplied = false;
+			movementState = null;
+			return;
+		}
+
+		animationsApplied = true;
+		updateFollowerMovement(follower);
 	}
 
 	private void updateFollowerMovement(NPC follower)
@@ -421,6 +447,7 @@ public class Racecar extends Plugin
 	private void resetState()
 	{
 		transmogInitialized = false;
+		animationsApplied = false;
 		sourceFollower = null;
 		movementState = null;
 	}
