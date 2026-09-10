@@ -43,7 +43,8 @@ public class Racecar extends Plugin
 	private static final boolean TEST_MODE = true;
 	private static final String TEST_FOLLOWER_NAME = "Yami";
 
-	private static final int TARGET_NPC_ID = NpcID.DOM_BOSS_BURROWED;
+	private static final int BOSS_MODEL_NPC_ID = NpcID.DOM_BOSS_BURROWED;
+	private static final int PET_MODEL_NPC_ID = NpcID.DOM_PET;
 	private static final int MENU_NPC_ID = NpcID.DOM_PET;
 	private static final int IDLE_ANIMATION_ID = AnimationID.DOM_BURROW_IDLE;
 	private static final int MOVEMENT_ANIMATION_ID = AnimationID.DOM_BURROWED_MOVEMENT;
@@ -204,12 +205,17 @@ public class Racecar extends Plugin
 		return follower.getId() == NpcID.DOM_PET || follower.getId() == NpcID.POH_DOM_PET;
 	}
 
+	private int getModelNpcId()
+	{
+		return config.useDomPetModel() ? PET_MODEL_NPC_ID : BOSS_MODEL_NPC_ID;
+	}
+
 	private RuneLiteObject initializeTransmogObject(NPC follower)
 	{
-		Model model = createBurrowedDoomModel();
+		Model model = createRacecarModel();
 		if (model == null)
 		{
-			log.debug("Unable to create burrowed Doom model for follower {} ({})",
+			log.debug("Unable to create Racecar model for follower {} ({})",
 				follower.getName(), follower.getId());
 			return null;
 		}
@@ -232,15 +238,15 @@ public class Racecar extends Plugin
 		movementState = null;
 		animationsApplied = false;
 
-		log.debug("Racecar transmog initialized for follower {} ({}) using target NPC {}",
-			follower.getName(), follower.getId(), TARGET_NPC_ID);
+		log.debug("Racecar transmog initialized for follower {} ({}) using model NPC {}",
+			follower.getName(), follower.getId(), getModelNpcId());
 		return transmogObject;
 	}
 
 	private void updateTransmogObject(NPC follower)
 	{
 		WorldView worldView = client.getTopLevelWorldView();
-		Model model = createBurrowedDoomModel();
+		Model model = createRacecarModel();
 
 		for (RuneLiteObject transmogObject : transmogObjects)
 		{
@@ -326,9 +332,9 @@ public class Racecar extends Plugin
 		}
 	}
 
-	private Model createBurrowedDoomModel()
+	private Model createRacecarModel()
 	{
-		NPCComposition composition = client.getNpcDefinition(TARGET_NPC_ID);
+		NPCComposition composition = client.getNpcDefinition(getModelNpcId());
 		if (composition == null)
 		{
 			return null;
@@ -362,6 +368,11 @@ public class Racecar extends Plugin
 		{
 			mergedModelData = mergedModelData.cloneVertices();
 
+			/*
+			 * The full boss model is 5x5 and needs reducing to pet scale. Dom's
+			 * own model is already 1x1, so when that test path is selected no
+			 * horizontal/model scaling is applied here.
+			 */
 			if (footprintSize > 1)
 			{
 				int petScale = Math.max(1, Math.round((float) MODEL_SCALE_BASE / footprintSize));
