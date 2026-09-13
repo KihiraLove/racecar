@@ -11,6 +11,7 @@ final class RacecarObject extends RuneLiteObjectController
 {
 	private static final int MODEL_SCALE_PERCENT = 200;
 	private static final int VERTICAL_OFFSET = 20;
+	private static final int NORMAL_RENDER_RADIUS = 60;
 
 	private final Client client;
 	private final Model burrowedModel;
@@ -23,6 +24,7 @@ final class RacecarObject extends RuneLiteObjectController
 	private volatile boolean active = true;
 	private Form form;
 	private boolean animationFinished;
+	private int sizePercentage = 100;
 
 	RacecarObject(Client client, Model burrowedModel, Model transitionModel, int horizontalScale, int verticalScale)
 	{
@@ -31,6 +33,15 @@ final class RacecarObject extends RuneLiteObjectController
 		this.transitionModel = transitionModel;
 		this.horizontalScale = Math.max(1, Math.round(horizontalScale * MODEL_SCALE_PERCENT / 100.0f));
 		this.verticalScale = Math.max(1, Math.round(verticalScale * MODEL_SCALE_PERCENT / 100.0f));
+	}
+
+	void setSizePercentage(int percentage)
+	{
+		if (active)
+		{
+			sizePercentage = Math.max(0, Math.min(500, percentage));
+			setRadius(Math.max(1, Math.round(NORMAL_RENDER_RADIUS * sizePercentage / 100.0f)));
+		}
 	}
 
 	void setAnimation(Animation animation, Form form)
@@ -88,14 +99,17 @@ final class RacecarObject extends RuneLiteObjectController
 	public Model getModel()
 	{
 		AnimationController controller = animationController;
-		if (!active || controller == null)
+		if (!active || controller == null || sizePercentage == 0)
 		{
 			return null;
 		}
 
 		Model renderedModel = controller.animate(form == Form.TRANSITION ? transitionModel : burrowedModel);
-		renderedModel.scale(horizontalScale, verticalScale, horizontalScale);
-		renderedModel.translate(0, -VERTICAL_OFFSET, 0);
+		float size = sizePercentage / 100.0f;
+		int scaledHorizontal = Math.max(1, Math.round(horizontalScale * size));
+		int scaledVertical = Math.max(1, Math.round(verticalScale * size));
+		renderedModel.scale(scaledHorizontal, scaledVertical, scaledHorizontal);
+		renderedModel.translate(0, -Math.round(VERTICAL_OFFSET * size), 0);
 		return renderedModel;
 	}
 

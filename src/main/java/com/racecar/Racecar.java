@@ -3,9 +3,12 @@ package com.racecar;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.BooleanSupplier;
+import java.util.function.IntConsumer;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Animation;
@@ -19,6 +22,7 @@ import net.runelite.api.ModelData;
 import net.runelite.api.NPC;
 import net.runelite.api.NPCComposition;
 import net.runelite.api.Perspective;
+import net.runelite.api.Renderable;
 import net.runelite.api.Scene;
 import net.runelite.api.TileObject;
 import net.runelite.api.WorldView;
@@ -27,14 +31,17 @@ import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.MenuEntryAdded;
 import net.runelite.api.gameval.AnimationID;
 import net.runelite.api.gameval.NpcID;
+import net.runelite.api.hooks.DrawCallbacks;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.callback.RenderCallback;
 import net.runelite.client.callback.RenderCallbackManager;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.config.ConfigProfile;
 import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.eventbus.EventBus;
 import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.events.ProfileChanged;
+import net.runelite.client.events.PluginMessage;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.plugins.gpu.GpuPlugin;
@@ -42,8 +49,8 @@ import net.runelite.client.plugins.gpu.GpuPlugin;
 @Slf4j
 @PluginDescriptor(
 	name = "Racecar",
-	description = "Transmogrifies Dom into the burrowed form of the Doom of Mokhaiotl. Requires RuneLite GPU.",
-	tags = {"doom", "mokhaiotl", "dom", "pet", "transmog", "racecar"}
+	description = "Adds a Metamorphosis option to Dom to change it to the burrowed phase of Doom. Requires a GPU renderer (GPU, 117 HD, GPU(Experimental), GPU (Legacy)",
+	tags = {"doom", "mokhaiotl", "dom", "pet", "transmog", "car", "metamorph", "metamorphosis"}
 )
 public class Racecar extends Plugin
 {
@@ -55,7 +62,6 @@ public class Racecar extends Plugin
 	private static final int TARGET_NPC_ID = NpcID.DOM_BOSS_BURROWED;
 	private static final int IDLE_ANIMATION_ID = AnimationID.DOM_BURROW_IDLE;
 	private static final int MOVEMENT_ANIMATION_ID = AnimationID.DOM_BURROWED_MOVEMENT;
-	private static final int PET_RENDER_RADIUS = 60;
 
 	private static final Set<RacecarObject> ACTIVE_OBJECTS = ConcurrentHashMap.newKeySet();
 
@@ -71,13 +77,16 @@ public class Racecar extends Plugin
 	@Inject
 	private ConfigManager configManager;
 
+	@Inject
+	private EventBus eventBus;
+
 	private final RenderCallback renderCallback = new RenderCallback()
 	{
 		@Override
 		public boolean drawObject(Scene scene, TileObject object)
 		{
-			return !transmogInitialized || !(object instanceof GameObject)
-				|| ((GameObject) object).getRenderable() != sourceFollower;
+			return !(object instanceof GameObject)
+				|| !isHiddenFollower(((GameObject) object).getRenderable());
 		}
 	};
 
@@ -88,6 +97,7 @@ public class Racecar extends Plugin
 	private NPC sourceFollower;
 	private MovementState movementState;
 	private RacecarObject transmogObject;
+	private PetDrawCallbacks petDrawCallbacks;
 
 	@Override
 	protected void startUp()
@@ -141,6 +151,7 @@ public class Racecar extends Plugin
 			{
 				clearTransmog();
 			}
+			restoreDrawCallbacks();
 			return;
 		}
 
@@ -159,6 +170,7 @@ public class Racecar extends Plugin
 			}
 		}
 
+		updateDrawCallbacks();
 		setTransmogLocation(follower);
 		if (transmogObject.isPlayingAction())
 		{
@@ -317,7 +329,64 @@ public class Racecar extends Plugin
 	private boolean canTransmog(NPC follower)
 	{
 		return client.getGameState() == GameState.LOGGED_IN
-			&& client.getDrawCallbacks() instanceof GpuPlugin && isSourceFollower(follower);
+			&& client.isGpu() && client.getDrawCallbacks() != null && isSourceFollower(follower);
+	}
+
+	@Subscribe
+	public void onPluginMessage(PluginMessage event)
+	{
+		if (CONFIG_GROUP.equals(event.getNamespace()) && "request-pet-visual".equals(event.getName()))
+		{
+			clientThread.invoke(this::publishPetVisual);
+		}
+	}
+
+	private void publishPetVisual()
+	{
+		if (!running || !transmogInitialized || transmogObject == null)
+		{
+			return;
+		}
+		RacecarObject object = transmogObject;
+		NPC follower = sourceFollower;
+		eventBus.post(new PluginMessage(CONFIG_GROUP, "pet-visual", Map.of(
+			"npc", follower,
+			"setSize", (IntConsumer) object::setSizePercentage,
+			"isActive", (BooleanSupplier) () -> running && transmogInitialized
+				&& transmogObject == object && client.getFollower() == follower)));
+	}
+
+	private boolean isHiddenFollower(Renderable renderable)
+	{
+		return running && transmogInitialized && renderable instanceof NPC && renderable == sourceFollower;
+	}
+
+	private void updateDrawCallbacks()
+	{
+		DrawCallbacks current = client.getDrawCallbacks();
+		if (petDrawCallbacks != null && petDrawCallbacks.isInstalled(current))
+		{
+			return;
+		}
+		restoreDrawCallbacks();
+		if (current != null && client.isGpu() && !(current instanceof GpuPlugin))
+		{
+			petDrawCallbacks = new PetDrawCallbacks(client, current, this::isHiddenFollower);
+			client.setDrawCallbacks(petDrawCallbacks);
+		}
+	}
+
+	private void restoreDrawCallbacks()
+	{
+		if (petDrawCallbacks != null)
+		{
+			petDrawCallbacks.deactivate();
+			if (client.getDrawCallbacks() == petDrawCallbacks)
+			{
+				client.setDrawCallbacks(petDrawCallbacks.getDelegate());
+			}
+			petDrawCallbacks = null;
+		}
 	}
 
 	private boolean isSourceFollower(NPC follower)
@@ -326,7 +395,6 @@ public class Racecar extends Plugin
 		{
 			return false;
 		}
-
 		return follower.getId() == NpcID.DOM_PET || follower.getId() == NpcID.POH_DOM_PET;
 	}
 
@@ -347,7 +415,6 @@ public class Racecar extends Plugin
 		int verticalScale = Math.max(1, Math.round((float) composition.getHeightScale() / footprintSize));
 
 		transmogObject = new RacecarObject(client, model, transitionModel, horizontalScale, verticalScale);
-		transmogObject.setRadius(PET_RENDER_RADIUS);
 		setTransmogLocation(follower);
 
 		movementState = form == RacecarObject.Form.TRANSITION ? null : getMovementState(follower);
@@ -362,6 +429,8 @@ public class Racecar extends Plugin
 		client.registerRuneLiteObject(transmogObject);
 		ACTIVE_OBJECTS.add(transmogObject);
 		transmogInitialized = true;
+		updateDrawCallbacks();
+		publishPetVisual();
 
 		log.debug(
 			"Racecar transmog initialized for follower {} ({}) using target NPC {}, base scale {}/{}",
@@ -455,6 +524,7 @@ public class Racecar extends Plugin
 
 	private void clearTransmog()
 	{
+		restoreDrawCallbacks();
 		cleanupTrackedObjects();
 		resetState();
 	}
