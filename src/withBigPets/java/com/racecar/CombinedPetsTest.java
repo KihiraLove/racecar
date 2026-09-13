@@ -25,6 +25,7 @@ import net.runelite.client.callback.ClientThread;
 import net.runelite.client.callback.RenderCallbackManager;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.EventBus;
+import net.runelite.client.plugins.PluginManager;
 import net.runelite.client.plugins.gpu.GpuPlugin;
 import org.junit.After;
 import org.junit.Before;
@@ -50,12 +51,15 @@ import static org.mockito.Mockito.when;
 @RunWith(Parameterized.class)
 public class CombinedPetsTest
 {
-	@Parameterized.Parameters(name = "built-in GPU: {0}")
+	@Parameterized.Parameters(name = "renderer: {0}")
 	public static Collection<Object[]> renderers()
 	{
-		return Arrays.asList(new Object[]{true}, new Object[]{false});
+		return Arrays.asList(new Object[]{"builtin"}, new Object[]{"alternative"}, new Object[]{"decorated builtin"});
 	}
 
+	private final PluginManager pluginManager = mock(PluginManager.class);
+	private final GpuPlugin builtin = mock(GpuPlugin.class);
+	private final boolean builtinActive;
 	private final Client client = mock(Client.class);
 	private final ClientThread clientThread = mock(ClientThread.class);
 	private final ConfigManager configManager = mock(ConfigManager.class);
@@ -69,9 +73,10 @@ public class CombinedPetsTest
 	private final TestBigPets bigPets = new TestBigPets();
 	private final DrawCallbacks renderer;
 
-	public CombinedPetsTest(boolean builtin)
+	public CombinedPetsTest(String mode)
 	{
-		renderer = builtin ? mock(GpuPlugin.class) : mock(DrawCallbacks.class);
+		builtinActive = !mode.equals("alternative");
+		renderer = mode.equals("builtin") ? builtin : mock(DrawCallbacks.class);
 	}
 
 	@Before
@@ -83,6 +88,7 @@ public class CombinedPetsTest
 			protected void configure()
 			{
 				bind(Client.class).toInstance(client);
+				bind(PluginManager.class).toInstance(pluginManager);
 				bind(ClientThread.class).toInstance(clientThread);
 				bind(ConfigManager.class).toInstance(configManager);
 				bind(BigPetsConfig.class).toInstance(config);
@@ -107,6 +113,8 @@ public class CombinedPetsTest
 			when(client.getDrawCallbacks()).thenReturn(invocation.getArgument(0));
 			return null;
 		}).when(client).setDrawCallbacks(any());
+		when(pluginManager.getPlugins()).thenReturn(java.util.Collections.singletonList(builtin));
+		when(pluginManager.isPluginActive(builtin)).thenReturn(builtinActive);
 		when(client.isClientThread()).thenReturn(true);
 		when(client.isGpu()).thenReturn(true);
 		when(client.getDrawCallbacks()).thenReturn(renderer);
@@ -167,6 +175,17 @@ public class CombinedPetsTest
 		eventBus.post(new ClientTick());
 		startBigPets();
 		eventBus.post(new BeforeRender());
+		controller().getModel();
+		verify(animated).scale(104, 104, 104);
+		verify(client, never()).createRuneLiteObject();
+	}
+
+	@Test
+	public void yamiTestVisualReceivesBigPetsScaling()
+	{
+		when(follower.getId()).thenReturn(NpcID.YAMA_PET);
+		when(follower.getName()).thenReturn("Yami");
+		startBoth();
 		controller().getModel();
 		verify(animated).scale(104, 104, 104);
 		verify(client, never()).createRuneLiteObject();
@@ -271,6 +290,11 @@ public class CombinedPetsTest
 	{
 		ArgumentCaptor<RuneLiteObjectController> captor = ArgumentCaptor.forClass(RuneLiteObjectController.class);
 		verify(client).registerRuneLiteObject(captor.capture());
+		if (builtinActive)
+		{
+			assertSame(renderer, client.getDrawCallbacks());
+			verify(client, never()).setDrawCallbacks(any());
+		}
 		return captor.getValue();
 	}
 

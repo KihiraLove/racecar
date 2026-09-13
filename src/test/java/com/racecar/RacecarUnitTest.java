@@ -27,6 +27,7 @@ import net.runelite.client.callback.ClientThread;
 import net.runelite.client.callback.RenderCallback;
 import net.runelite.client.callback.RenderCallbackManager;
 import net.runelite.client.config.ConfigManager;
+import net.runelite.client.plugins.PluginManager;
 import net.runelite.client.plugins.gpu.GpuPlugin;
 import org.junit.After;
 import org.junit.Before;
@@ -50,6 +51,8 @@ import static org.mockito.Mockito.withSettings;
 
 public class RacecarUnitTest
 {
+	private final PluginManager pluginManager = mock(PluginManager.class);
+	private final GpuPlugin builtin = mock(GpuPlugin.class);
 	private final Client client = mock(Client.class);
 	private final ClientThread clientThread = mock(ClientThread.class);
 	private final RenderCallbackManager callbacks = mock(RenderCallbackManager.class);
@@ -67,6 +70,7 @@ public class RacecarUnitTest
 	@Before
 	public void setUp()
 	{
+		when(pluginManager.getPlugins()).thenReturn(java.util.Collections.singletonList(builtin));
 		plugin = new Racecar();
 		Guice.createInjector(new AbstractModule()
 		{
@@ -74,6 +78,7 @@ public class RacecarUnitTest
 			protected void configure()
 			{
 				bind(Client.class).toInstance(client);
+				bind(PluginManager.class).toInstance(pluginManager);
 				bind(ClientThread.class).toInstance(clientThread);
 				bind(RenderCallbackManager.class).toInstance(callbacks);
 				bind(ConfigManager.class).toInstance(configManager);
@@ -146,6 +151,66 @@ public class RacecarUnitTest
 		client.getDrawCallbacks().draw(null, null, follower, 512, 6400, -20, 6500, 123L);
 		verify(client).checkClickbox(null, original, 512, 6400, -20, 6500, 123L);
 		verify(renderer, never()).draw(null, null, follower, 512, 6400, -20, 6500, 123L);
+	}
+
+	@Test
+	public void decoratedBuiltinGpuKeepsCallbacksAcrossDecoratorTogglesAndShutdown()
+	{
+		when(pluginManager.isPluginActive(builtin)).thenReturn(true);
+		DrawCallbacks decorated = mock(DrawCallbacks.class);
+		for (DrawCallbacks current : new DrawCallbacks[]{decorated, builtin, decorated})
+		{
+			when(client.getDrawCallbacks()).thenReturn(current);
+			plugin.onClientTick(new ClientTick());
+			assertSame(current, client.getDrawCallbacks());
+			assertFalse(drawsFollower());
+		}
+		plugin.shutDown();
+		assertSame(decorated, client.getDrawCallbacks());
+		assertTrue(drawsFollower());
+		verify(client, never()).setDrawCallbacks(any());
+	}
+
+	@Test
+	public void builtinActivationRemovesAnAlreadyInstalledAdapter()
+	{
+		DrawCallbacks decorated = mock(DrawCallbacks.class);
+		when(client.getDrawCallbacks()).thenReturn(decorated);
+		plugin.onClientTick(new ClientTick());
+		DrawCallbacks adapter = client.getDrawCallbacks();
+		assertTrue(adapter instanceof PetDrawCallbacks);
+
+		when(pluginManager.isPluginActive(builtin)).thenReturn(true);
+		plugin.onClientTick(new ClientTick());
+		assertSame(decorated, client.getDrawCallbacks());
+		assertFalse(drawsFollower());
+		adapter.draw(null, null, follower, 0, 1, 2, 3, 4L);
+		verify(decorated).draw(null, null, follower, 0, 1, 2, 3, 4L);
+	}
+
+	@Test
+	public void switchingBetweenAlternativeAndDecoratedBuiltinPreservesTheCurrentRenderer()
+	{
+		DrawCallbacks alternative = mock(DrawCallbacks.class);
+		when(client.getDrawCallbacks()).thenReturn(alternative);
+		plugin.onClientTick(new ClientTick());
+		DrawCallbacks oldAdapter = client.getDrawCallbacks();
+
+		DrawCallbacks decorated = mock(DrawCallbacks.class);
+		when(pluginManager.isPluginActive(builtin)).thenReturn(true);
+		when(client.getDrawCallbacks()).thenReturn(decorated);
+		clearInvocations(client);
+		plugin.onClientTick(new ClientTick());
+		assertSame(decorated, client.getDrawCallbacks());
+		verify(client, never()).setDrawCallbacks(any());
+		oldAdapter.draw(null, null, follower, 0, 1, 2, 3, 4L);
+		verify(alternative).draw(null, null, follower, 0, 1, 2, 3, 4L);
+
+		when(pluginManager.isPluginActive(builtin)).thenReturn(false);
+		when(client.getDrawCallbacks()).thenReturn(alternative);
+		plugin.onClientTick(new ClientTick());
+		assertSame(alternative, ((PetDrawCallbacks) client.getDrawCallbacks()).getDelegate());
+		assertFalse(drawsFollower());
 	}
 
 	@Test
@@ -223,10 +288,25 @@ public class RacecarUnitTest
 	}
 
 	@Test
+	public void yamiTestModeSupportsFollowerAndHouseVariant()
+	{
+		when(follower.getName()).thenReturn("Yami");
+		for (int id : new int[]{NpcID.YAMA_PET, NpcID.POH_YAMA_PET})
+		{
+			when(follower.getId()).thenReturn(id);
+			plugin.onClientTick(new ClientTick());
+			assertFalse(drawsFollower());
+		}
+		plugin.onMenuEntryAdded(new MenuEntryAdded(examine));
+		verify(metamorphosis).setOption("Metamorphosis");
+		verify(emote).setOption("Emote");
+	}
+
+	@Test
 	public void otherPetsAreExcludedEvenIfNamedDom()
 	{
 		when(follower.getName()).thenReturn("Yami");
-		when(follower.getId()).thenReturn(NpcID.YAMA_PET);
+		when(follower.getId()).thenReturn(NpcID.POH_ROCK);
 		plugin.onClientTick(new ClientTick());
 		plugin.onMenuEntryAdded(new MenuEntryAdded(examine));
 		when(follower.getName()).thenReturn("Dom");

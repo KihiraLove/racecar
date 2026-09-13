@@ -44,6 +44,7 @@ import net.runelite.client.events.ProfileChanged;
 import net.runelite.client.events.PluginMessage;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
+import net.runelite.client.plugins.PluginManager;
 import net.runelite.client.plugins.gpu.GpuPlugin;
 
 @Slf4j
@@ -58,6 +59,7 @@ public class Racecar extends Plugin
 	private static final String BURROWED_KEY = "burrowed";
 	private static final String METAMORPHOSIS = "Metamorphosis";
 	private static final String EMOTE = "Emote";
+	private static final boolean YAMI_TEST_MODE = false;
 
 	private static final int TARGET_NPC_ID = NpcID.DOM_BOSS_BURROWED;
 	private static final int IDLE_ANIMATION_ID = AnimationID.DOM_BURROW_IDLE;
@@ -70,6 +72,9 @@ public class Racecar extends Plugin
 
 	@Inject
 	private ClientThread clientThread;
+
+	@Inject
+	private PluginManager pluginManager;
 
 	@Inject
 	private RenderCallbackManager renderCallbackManager;
@@ -98,10 +103,14 @@ public class Racecar extends Plugin
 	private MovementState movementState;
 	private RacecarObject transmogObject;
 	private PetDrawCallbacks petDrawCallbacks;
+	private Plugin gpuPlugin;
 
 	@Override
 	protected void startUp()
 	{
+		gpuPlugin = pluginManager.getPlugins().stream()
+			.filter(plugin -> plugin instanceof GpuPlugin)
+			.findFirst().orElse(null);
 		log.debug("Racecar started");
 		clientThread.invokeLater(() ->
 		{
@@ -364,12 +373,17 @@ public class Racecar extends Plugin
 	private void updateDrawCallbacks()
 	{
 		DrawCallbacks current = client.getDrawCallbacks();
+		if (current instanceof GpuPlugin || gpuPlugin != null && pluginManager.isPluginActive(gpuPlugin))
+		{
+			restoreDrawCallbacks();
+			return;
+		}
 		if (petDrawCallbacks != null && petDrawCallbacks.isInstalled(current))
 		{
 			return;
 		}
 		restoreDrawCallbacks();
-		if (current != null && client.isGpu() && !(current instanceof GpuPlugin))
+		if (current != null && client.isGpu())
 		{
 			petDrawCallbacks = new PetDrawCallbacks(client, current, this::isHiddenFollower);
 			client.setDrawCallbacks(petDrawCallbacks);
@@ -395,7 +409,8 @@ public class Racecar extends Plugin
 		{
 			return false;
 		}
-		return follower.getId() == NpcID.DOM_PET || follower.getId() == NpcID.POH_DOM_PET;
+		return follower.getId() == NpcID.DOM_PET || follower.getId() == NpcID.POH_DOM_PET
+			|| YAMI_TEST_MODE && (follower.getId() == NpcID.YAMA_PET || follower.getId() == NpcID.POH_YAMA_PET);
 	}
 
 	private boolean initializeTransmogObject(NPC follower, int animationId, RacecarObject.Form form)
