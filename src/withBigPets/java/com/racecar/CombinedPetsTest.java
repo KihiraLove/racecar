@@ -6,6 +6,9 @@ import com.google.inject.AbstractModule;
 import com.google.inject.Guice;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.Set;
 import net.runelite.api.Animation;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
@@ -32,12 +35,12 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
-import org.mockito.ArgumentCaptor;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.clearInvocations;
@@ -68,7 +71,7 @@ public class CombinedPetsTest
 	private final NPC follower = mock(NPC.class);
 	private final Model original = mock(Model.class);
 	private final Model animated = mock(Model.class);
-	private final RuneLiteObject normalVisual = mock(RuneLiteObject.class);
+	private final Set<RuneLiteObjectController> activeObjects = Collections.newSetFromMap(new IdentityHashMap<>());
 	private final Racecar racecar = new Racecar();
 	private final TestBigPets bigPets = new TestBigPets();
 	private final DrawCallbacks renderer;
@@ -127,8 +130,17 @@ public class CombinedPetsTest
 		when(follower.getLocalLocation()).thenReturn(new LocalPoint(6400, 6400));
 		when(configManager.getConfiguration("racecar", "burrowed")).thenReturn("true");
 		when(config.petSizePercentage()).thenReturn(200);
-		when(client.mergeModels(any(Model[].class))).thenReturn(mock(Model.class));
-		when(client.createRuneLiteObject()).thenReturn(normalVisual);
+		doAnswer(invocation ->
+		{
+			activeObjects.add(invocation.getArgument(0));
+			return null;
+		}).when(client).registerRuneLiteObject(any());
+		doAnswer(invocation ->
+		{
+			activeObjects.remove(invocation.getArgument(0));
+			return null;
+		}).when(client).removeRuneLiteObject(any());
+		when(client.isRuneLiteObjectRegistered(any())).thenAnswer(invocation -> activeObjects.contains(invocation.getArgument(0)));
 		NPCComposition definition = mock(NPCComposition.class);
 		when(definition.getModels()).thenReturn(new int[]{1});
 		when(definition.getSize()).thenReturn(5);
@@ -158,14 +170,17 @@ public class CombinedPetsTest
 	{
 		startBigPets();
 		eventBus.post(new BeforeRender());
-		verify(normalVisual).setModel(any(Model.class));
+		RuneLiteObjectController normalVisual = controller();
+		assertTrue(normalVisual instanceof RuneLiteObject);
+		assertNotNull(normalVisual.getModel());
+		verify(animated).scale(256, 256, 256);
 		startRacecar();
 		eventBus.post(new ClientTick());
 		eventBus.post(new BeforeRender());
-		verify(normalVisual).setActive(false);
+		verify(client).removeRuneLiteObject(normalVisual);
 		controller().getModel();
 		verify(animated).scale(104, 104, 104);
-		verify(client).createRuneLiteObject();
+		verify(client).registerRuneLiteObject(any(RuneLiteObject.class));
 	}
 
 	@Test
@@ -177,18 +192,18 @@ public class CombinedPetsTest
 		eventBus.post(new BeforeRender());
 		controller().getModel();
 		verify(animated).scale(104, 104, 104);
-		verify(client, never()).createRuneLiteObject();
+		verify(client, never()).registerRuneLiteObject(any(RuneLiteObject.class));
 	}
 
 	@Test
-	public void yamiTestVisualReceivesBigPetsScaling()
+	public void yamiUsesBigPetsVisualWhenRacecarTestModeIsDisabled()
 	{
 		when(follower.getId()).thenReturn(NpcID.YAMA_PET);
 		when(follower.getName()).thenReturn("Yami");
 		startBoth();
 		controller().getModel();
-		verify(animated).scale(104, 104, 104);
-		verify(client, never()).createRuneLiteObject();
+		verify(animated).scale(256, 256, 256);
+		verify(client, never()).registerRuneLiteObject(any(RacecarObject.class));
 	}
 
 	@Test
@@ -207,7 +222,7 @@ public class CombinedPetsTest
 		when(config.petSizePercentage()).thenReturn(0);
 		eventBus.post(new BeforeRender());
 		assertNull(car.getModel());
-		verify(client, never()).createRuneLiteObject();
+		verify(client, never()).registerRuneLiteObject(any(RuneLiteObject.class));
 	}
 
 	@Test
@@ -232,8 +247,11 @@ public class CombinedPetsTest
 		eventBus.unregister(racecar);
 		racecar.shutDown();
 		eventBus.post(new BeforeRender());
-		verify(client).createRuneLiteObject();
-		verify(normalVisual).setModel(any(Model.class));
+		verify(client).registerRuneLiteObject(any(RuneLiteObject.class));
+		RuneLiteObjectController normalVisual = controller();
+		assertTrue(normalVisual instanceof RuneLiteObject);
+		assertNotNull(normalVisual.getModel());
+		verify(animated).scale(256, 256, 256);
 	}
 
 	@Test
@@ -244,7 +262,7 @@ public class CombinedPetsTest
 		startBoth();
 		controller().getModel();
 		verify(animated).scale(104, 104, 104);
-		verify(client, never()).createRuneLiteObject();
+		verify(client, never()).registerRuneLiteObject(any(RuneLiteObject.class));
 	}
 
 	@Test
@@ -288,14 +306,13 @@ public class CombinedPetsTest
 
 	private RuneLiteObjectController controller()
 	{
-		ArgumentCaptor<RuneLiteObjectController> captor = ArgumentCaptor.forClass(RuneLiteObjectController.class);
-		verify(client).registerRuneLiteObject(captor.capture());
+		assertEquals(1, activeObjects.size());
 		if (builtinActive)
 		{
 			assertSame(renderer, client.getDrawCallbacks());
 			verify(client, never()).setDrawCallbacks(any());
 		}
-		return captor.getValue();
+		return activeObjects.iterator().next();
 	}
 
 	public static class TestBigPets extends BigPets

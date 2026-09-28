@@ -288,18 +288,18 @@ public class RacecarUnitTest
 	}
 
 	@Test
-	public void yamiTestModeSupportsFollowerAndHouseVariant()
+	public void yamiIsExcludedWhenTestModeIsDisabled()
 	{
 		when(follower.getName()).thenReturn("Yami");
 		for (int id : new int[]{NpcID.YAMA_PET, NpcID.POH_YAMA_PET})
 		{
 			when(follower.getId()).thenReturn(id);
 			plugin.onClientTick(new ClientTick());
-			assertFalse(drawsFollower());
+			assertTrue(drawsFollower());
 		}
 		plugin.onMenuEntryAdded(new MenuEntryAdded(examine));
-		verify(metamorphosis).setOption("Metamorphosis");
-		verify(emote).setOption("Emote");
+		verify(client, never()).registerRuneLiteObject(any());
+		verify(menu, never()).createMenuEntry(anyInt());
 	}
 
 	@Test
